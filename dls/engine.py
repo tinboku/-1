@@ -14,7 +14,7 @@ from .clients.openalex import OpenAlexClient
 from .clients.semantic_scholar import RateLimited, SemanticScholarClient
 from .llm import HeuristicLLM
 from .models import Paper, SearchOutcome
-from .scoring import dedupe, identity_keys
+from .scoring import dedupe, identity_keys, lexical_relevance
 from .store import Store
 
 ProgressFn = Callable[[str, str], None]
@@ -208,10 +208,31 @@ class DeepSearchEngine:
         # -- Searching ---------------------------------------------------
         progress("Searching for the most promising papers", "Semantic Scholar + OpenAlex")
         pool: list[Paper] = []
+        query_history: list[dict] = []
+        executed_queries: set[tuple[str, str]] = set()
+
+        def execute_query(source: str, query: str, round_no: int, fetch: Callable) -> list[Paper]:
+            query_key = " ".join(query.split()).casefold()
+            key = (source, query_key)
+            if not query_key or key in executed_queries:
+                return []
+            executed_queries.add(key)
+            record = {"query": query, "source": source, "round": round_no,
+                      "result_count": None, "status": "failed"}
+            query_history.append(record)
+            try:
+                papers = fetch()
+            except Exception as exc:
+                record["error"] = str(exc)
+                raise
+            record.update(result_count=len(papers), status="success")
+            return papers
+
         queries = list(dict.fromkeys([question, *criteria]))
         for q in queries:
             try:
-                pool.extend(self.s2.search(q, limit=per_query))
+                pool.extend(execute_query("semantic_scholar", q, 0,
+                                          lambda: self.s2.search(q, limit=per_query)))
             except RateLimited:
                 warnings.append(f"Semantic Scholar initial search rate-limited for query {q!r}.")
                 continue
@@ -220,12 +241,14 @@ class DeepSearchEngine:
                 continue
         try:
             if self.openalex is not None:
-                pool.extend(self.openalex.search(question, per_page=25))
+                pool.extend(execute_query("openalex", question, 0,
+                                          lambda: self.openalex.search(question, per_page=25)))
         except Exception as exc:
             warnings.append(f"OpenAlex initial search failed for query {question!r}: {exc}")
         if self.crossref is not None:
             try:
-                pool.extend(self.crossref.search(question, rows=per_query))
+                pool.extend(execute_query("crossref", question, 0,
+                                          lambda: self.crossref.search(question, rows=per_query)))
             except Exception as exc:
                 warnings.append(f"Crossref initial search failed for query {question!r}: {exc}")
 
@@ -249,17 +272,47 @@ class DeepSearchEngine:
         # -- Reflecting / Adapting (snowball rounds) -------------------------
         rounds_done = 0
         converged = False
+        stop_reason = "Maximum search rounds reached."
         for round_no in range(1, max_rounds + 1):
             rounds_done = round_no
             progress("Reflecting on the results", f"round {round_no}")
-            reflection = self.llm.reflect(criteria, sorted(included, key=lambda p: -(p.match or 0)), round_no)
+            context = {
+                "query_history": [dict(record) for record in query_history],
+                "excluded_papers": [
+                    {"paper_id": p.paper_id, "title": p.title, "match": p.match,
+                     "reason": f"MATCH {p.match or 0} below {self.include_threshold}; "
+                               + (p.match_reason or "no scoring reason")}
+                    for p in sorted(scored, key=lambda p: -(p.match or 0))
+                    if (p.match or 0) < self.include_threshold
+                ][:10],
+                "criteria_coverage": [
+                    {"criterion": criterion,
+                     "matched_papers": sum(lexical_relevance(criterion, p) >= 0.5 for p in included)}
+                    for criterion in criteria
+                ],
+                "coverage_method": "lexical_relevance >= 0.5 among included papers; proxy only",
+            }
+            reflection = self.llm.reflect(
+                criteria, sorted(included, key=lambda p: -(p.match or 0)), round_no,
+                context=context,
+            )
+            requested_stop = reflection.get("stop") is True
+            reflection_reason = reflection.get("reason")
+            if not isinstance(reflection_reason, str) or not reflection_reason.strip():
+                # Legacy backends may omit reason; keep the old decision but label it honestly.
+                reflection_reason = "Legacy reflection requested stop without providing a reason."
+            else:
+                reflection_reason = reflection_reason.strip()
             seeds = sorted(included, key=lambda p: -(p.match or 0))[:seed_top]
             progress("Adapting and searching again", f"snowballing from {len(seeds)} seeds")
             candidates = dedupe(self._snowball(seeds, warnings))
             # The reflection step may propose fresh queries; run them too.
             for new_q in reflection.get("new_queries") or []:
+                if not isinstance(new_q, str) or not new_q.strip():
+                    continue
                 try:
-                    extra = self.s2.search(new_q, limit=20)
+                    extra = execute_query("semantic_scholar", new_q, round_no,
+                                          lambda: self.s2.search(new_q, limit=20))
                     for p in extra:
                         if p.found_via is None:
                             p.found_via = "reflection query"
@@ -272,6 +325,7 @@ class DeepSearchEngine:
                 seen_keys |= identity_keys(c)
             if not candidates:
                 converged = not warnings
+                stop_reason = reflection_reason if requested_stop else "No new candidates after deduplication."
                 break
             new_scored = self._score(criteria, candidates)
             for p in new_scored:
@@ -280,8 +334,9 @@ class DeepSearchEngine:
             new_included = [p for p in new_scored if (p.match or 0) >= self.include_threshold]
             included.extend(new_included)
             gain = len(new_included) / max(1, len(included))
-            if reflection.get("stop") or gain < 0.03:
+            if requested_stop or gain < 0.03:
                 converged = not warnings
+                stop_reason = reflection_reason if requested_stop else "Relevant-paper gain below 0.03."
                 break
 
         included.sort(key=lambda p: -(p.match or 0))
@@ -325,4 +380,6 @@ class DeepSearchEngine:
             coverage=coverage,
             warnings=warnings,
             degraded=bool(warnings),
+            stop_reason=stop_reason,
+            query_history=query_history,
         )
