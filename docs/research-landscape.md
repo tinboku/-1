@@ -19,7 +19,20 @@
 | **ASReview**（asreview，★1k） | 系统综述主动学习筛选 | **主动学习排序筛选**：人标少量、机器排剩余——对应 MATCH 分的校准思路 | 是筛选工具，不做发现与报告 |
 | **LitUbik** | 人类主导的系统综述平台（AGPL） | 协议→检索式→去重→筛选→滚雪球→抽取→PRISMA 的完整可追溯流程 | AGPL 且为重型 Web 平台；作流程完整性参照 |
 
-## 2. 数据源选型（官方 API，均为公开接口）
+## 2. 第二批参考（2026-11-02 晚补充）
+
+| 项目 | 教我们的事 | 对应我们的缺口 |
+|---|---|---|
+| **PaSa**（ByteDance，ACL 2025，bytedance/pasa） | Crawler/Selector 双 agent：Crawler 对队列里**每篇论文**自主决策「调检索 / 展开引用 / 停」，Selector 逐篇按 criteria 判分。另有 AutoScholarQuery（35k 合成查询-论文对）与 RealScholarQuery 基准 | 我们的 reflect/滚雪球是固定轮数+模板规则，应升级为逐篇决策；其数据集可直接拿来做评测 |
+| **DeepScholar-Bench**（guestrin-lab） | 活基准：用近期 arXiv 论文的人工 Related Work 当金标准，评组织性/要点覆盖/相关性率/引用可核查性；附参考实现 DeepScholar-ref（LOTUS 语义算子：filter/top-k/aggregate 组合管线）。全场最好系统综合分也不到约 31%——这件事本来就难 | 给我们立评测：没有基准，每次改版都是凭感觉 |
+| **LitSearch**（Princeton，597 查询） | 检索基准实测：稠密检索（GritLM recall@5 74.8%）远胜 BM25 类词法方法，LLM 重排再 +4.4% | 我们的启发式词法评分只是占位；升级路线 = 语义检索 + LLM 重排 |
+| **AutoSurvey / AutoSurvey2** | 综述生成管线：检索 → 并行分节 RAG 起草 → 整合修订 → 多标准自评；64K token 综述的引用 recall 82.25% / precision 77.41%，消融证明去掉检索引用 recall 直接崩到 60% | 我们的报告是单遍抽取式，应升级为提纲→分节起草→引用保真自评 |
+| **ASReview Datatools** | `asreview data snowball` 用 OpenAlex 按 DOI 列表做前/后向滚雪球，是系统综述圈的标准做法；ASReview 本体的主动学习筛选（人标几篇→模型重排其余）是筛选环节的金标准 | 我们的 trace 与之同构（多一个 S2 通道）；可加「人工反馈重排」 |
+| **GROBID** | PDF 结构化解析的事实标准（标题/作者/参考文献/章节切分） | 全文层：我们的 PDF 导入目前只登记文件，全文解析应走 GROBID 或 PaperQA2 的管线，别自己造 |
+
+优先级建议：① 先接 LLM key（零代码、收益最大）→ ② PaSa 式逐篇遍历决策 + LitSearch 式语义重排 → ③ 用 DeepScholar-Bench/LitSearch 搭小评测 → ④ 全文层（GROBID/PaperQA2）→ ⑤ AutoSurvey 式报告管线。
+
+## 3. 数据源选型（官方 API，均为公开接口）
 
 | 数据源 | 角色 | 要点 |
 |---|---|---|
@@ -28,7 +41,7 @@
 | **Crossref API** | DOI 元数据补全 | 按 DOI 查标题/作者/期刊/年份，导入与去重的锚点 |
 | **arXiv API** | 预印本补充（规划中） | CS 预印本时效性；S2 已覆盖大部分，列为二期 |
 
-## 3. 本项目的技术选型结论
+## 4. 本项目的技术选型结论
 
 - **语言/依赖**：Python 3.12，只依赖 `requests`（其余全标准库：
   sqlite3 存项目库、http.server 提供 Web UI、unittest 做测试）。
