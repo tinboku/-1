@@ -18,7 +18,7 @@ try:
 except ImportError:  # pragma: no cover
     raise unittest.SkipTest("fastapi not installed (pip install -e .[api])")
 
-from dls.api import create_app
+from dls.api import create_app, paper_dict
 from dls.models import Paper, SearchOutcome
 from dls.store import Store
 
@@ -94,6 +94,127 @@ class ApiTest(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         self.ctx = _fake_ctx(self.tmp)
         self.client = TestClient(create_app(self.ctx))
+
+    def tearDown(self):
+        self.client.app.state.jobs._pool.shutdown(wait=True)
+        self.client.close()
+        self.ctx.store.conn.close()
+
+    def _search(self, **payload):
+        response = self.client.post("/api/searches", json={"question": "q", **payload})
+        return _wait_job(self.client, response.json()["job_id"])
+
+    def test_plan_answers_reach_criteria_builder(self):
+        received = []
+        self.ctx.engine.build_criteria = lambda q, answers: received.append(answers) or [answers["Scope?"]]
+        response = self.client.post("/api/plan", json={"question": "q", "answers": {"Scope?": "tabular only"}})
+        self.assertEqual(response.json()["criteria"], ["tabular only"])
+        self.assertEqual(received, [{"Scope?": "tabular only"}])
+
+    def test_search_preserves_edited_criteria_and_answers(self):
+        snap = self._search(criteria=["edited criterion"], answers={"Scope?": "tables"})
+        detail = self.client.get(f"/api/searches/{snap['result']['search_id']}").json()
+        self.assertEqual(detail["criteria"], ["edited criterion"])
+        self.assertEqual(detail["answers"], {"Scope?": "tables"})
+
+    def test_job_list_recovers_running_job_without_store_lock(self):
+        import threading
+        started, release = threading.Event(), threading.Event()
+        def work(job):
+            started.set()
+            release.wait(3)
+            return {"file_id": 7}
+        job = self.client.app.state.jobs.submit("report", work, search_id=42)
+        try:
+            self.assertTrue(started.wait(1))
+            with self.ctx.store.conn:
+                listing = self.client.get("/api/jobs").json()
+            self.assertEqual(listing[0]["id"], job.id)
+            self.assertEqual(listing[0]["status"], "running")
+            self.assertEqual(listing[0]["search_id"], 42)
+            self.assertNotIn("events", listing[0])
+        finally:
+            release.set()
+
+    def test_job_snapshot_replays_all_events(self):
+        snap = self._search()
+        again = self.client.get(f"/api/jobs/{snap['id']}").json()
+        self.assertEqual(again["events"], snap["events"])
+        self.assertTrue(all("stage" in e and "detail" in e for e in again["events"]))
+
+    def test_search_exposes_session_warnings(self):
+        run = self.ctx.engine.run
+        def warned(*args, **kwargs):
+            result = run(*args, **kwargs)
+            result.warnings = ["OpenAlex unavailable"]
+            return result
+        self.ctx.engine.run = warned
+        snap = self._search()
+        self.assertTrue(snap["result"]["degraded"])
+        detail = self.client.get(f"/api/searches/{snap['result']['search_id']}").json()
+        self.assertEqual(detail["warnings"], ["OpenAlex unavailable"])
+        self.assertTrue(detail["degraded"])
+
+    def test_historical_search_does_not_invent_warnings(self):
+        sid = self.ctx.store.create_search("default", "old", [], {})
+        detail = self.client.get(f"/api/searches/{sid}").json()
+        self.assertEqual(detail["warnings"], [])
+        self.assertFalse(detail["degraded"])
+
+    def test_paper_score_source_is_explicit_or_unknown(self):
+        paper = _paper()
+        self.assertIsNone(paper_dict(paper)["match_source"])
+        paper.match_source = "heuristic"
+        self.assertEqual(paper_dict(paper)["match_source"], "heuristic")
+
+    def test_lookup_and_paper_detail_provenance(self):
+        snap = self._search()
+        paper = self.client.get(f"/api/searches/{snap['result']['search_id']}").json()["papers"][0]
+        for identifier in [paper["key"], paper["doi"], paper["paper_id"]]:
+            result = self.client.get("/api/papers/lookup", params={"identifier": identifier})
+            self.assertEqual(result.json()["abstract"], _paper().abstract)
+        self.assertEqual(paper["found_via"], "search")
+        self.assertEqual(self.client.get("/api/papers/lookup?identifier=missing").status_code, 404)
+
+    def test_folder_filter_and_clear(self):
+        self._search()
+        pid = self.client.get("/api/papers").json()[0]["db_id"]
+        self.client.post(f"/api/papers/{pid}/folder", json={"folder": "综述"})
+        self.assertEqual(len(self.client.get("/api/papers", params={"folder": "综述"}).json()), 1)
+        self.assertEqual(self.client.get("/api/papers?folder=other").json(), [])
+        self.client.post(f"/api/papers/{pid}/folder", json={"folder": None})
+        self.assertEqual(self.client.get("/api/papers").json()[0]["folder"], None)
+
+    def test_bibtex_import_from_content(self):
+        response = self.client.post("/api/import/bibtex", json={"content": "@article{test,\n title={Imported Paper}, author={Alice Smith}, year={2024}\n}"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["imported"], 1)
+        self.assertEqual(self.client.get("/api/papers").json()[0]["title"], "Imported Paper")
+        self.assertEqual(list(self.ctx.config.files_dir.glob("import-*.bib")), [])
+        invalid = self.client.post("/api/import/bibtex", json={"content": "not bibtex"})
+        self.assertEqual(invalid.status_code, 422)
+        self.assertEqual(list(self.ctx.config.files_dir.glob("import-*.bib")), [])
+
+    def test_report_and_extract_jobs_have_search_context(self):
+        sid = self._search()["result"]["search_id"]
+        self.ctx.llm.write_report = lambda *args: "# Report\n[Zhang25]"
+        self.ctx.llm.extract_row = lambda paper, columns: {"title": paper.title}
+        for action, body, expected in [("report", {}, "# Report"), ("extract", {"columns": ["title"]}, "AutoDDG")]:
+            response = self.client.post(f"/api/searches/{sid}/{action}", json=body)
+            snap = _wait_job(self.client, response.json()["job_id"])
+            self.assertEqual(snap["status"], "done", snap)
+            self.assertEqual(snap["search_id"], sid)
+            artifact = self.client.get(f"/api/files/{snap['result']['file_id']}").json()
+            self.assertIn(expected, artifact["content"])
+
+    def test_failed_job_surfaces_real_error(self):
+        def fail(*args, **kwargs):
+            raise RuntimeError("upstream unavailable")
+        self.ctx.engine.run = fail
+        snap = self._search(criteria=["criterion"])
+        self.assertEqual(snap["status"], "error")
+        self.assertIn("upstream unavailable", snap["error"])
+        self.assertIsNone(snap["result"])
 
     def test_health(self):
         r = self.client.get("/api/health")
