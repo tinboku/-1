@@ -263,6 +263,13 @@ def cmd_serve(ctx: Context, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_api(ctx: Context, args: argparse.Namespace) -> int:
+    from .api import run_api
+
+    run_api(port=args.port, host=args.host)
+    return 0
+
+
 def cmd_mcp(ctx: Context, args: argparse.Namespace) -> int:
     from .mcp_server import run_stdio
 
@@ -353,6 +360,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("serve", help="run the local web UI")
     p.add_argument("--port", type=int, default=8765)
     p.set_defaults(func=cmd_serve)
+
+    p = sub.add_parser("api", help="run the HTTP API + web app (needs the api extra)")
+    p.add_argument("--port", type=int, default=8000)
+    p.add_argument("--host", default="127.0.0.1")
+    p.set_defaults(func=cmd_api)
 
     p = sub.add_parser("mcp", help="run the MCP server on stdio")
     p.set_defaults(func=cmd_mcp)

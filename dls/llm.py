@@ -5,6 +5,11 @@ Two implementations of the same interface:
 - ``OpenAIChatLLM``: any OpenAI-compatible chat endpoint (set LLM_API_KEY,
   LLM_BASE_URL, LLM_MODEL). Used for brainstorming, criteria writing,
   MATCH judging, report writing, table extraction and follow-up Q&A.
+- ``GeminiConnectorLLM``: Gemini through the registered custom.gemini
+  connector (set DLS_LLM_BACKEND=gemini-connector). The API key lives in
+  the connector's secure storage and is never present in this process;
+  each call goes through the connector helper, which attaches a
+  surrogate credential that is swapped for the real key on egress.
 - ``HeuristicLLM``: deterministic offline fallback (lexical scoring,
   extractive report assembly). Lets the whole pipeline run — and be
   tested — with no API key at all.
@@ -17,6 +22,9 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
+import time
 
 import requests
 
@@ -377,7 +385,67 @@ class OpenAIChatLLM(HeuristicLLM):
             return super().answer(question, papers)
 
 
+# ---------------------------------------------------------------------------
+# Gemini via the custom.gemini connector (credential stays in the vault)
+# ---------------------------------------------------------------------------
+
+class GeminiConnectorLLM(OpenAIChatLLM):
+    """OpenAI-shaped calls to Gemini, executed by the connector helper.
+
+    The helper (custom.gemini/bin/gemini.py) attaches an ``hsurr:``
+    surrogate to each request; the real API key is swapped in by the
+    runtime on egress to generativelanguage.googleapis.com. This class
+    therefore never sees a credential. All prompting, batching and
+    fallbacks are inherited from OpenAIChatLLM; only the transport
+    differs.
+    """
+
+    name = "gemini-connector"
+
+    def __init__(self, config: Config):
+        self.config = config
+        self.session = None  # transport is the helper subprocess, not requests
+
+    def _chat(self, system: str, user: str, json_mode: bool = False) -> str:
+        body: dict = {
+            "model": self.config.llm_model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0.2,
+        }
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
+        # The egress path to Google intermittently stalls (observed reads
+        # hanging past 180s). Retry a few times before giving up; callers
+        # degrade to the heuristic backend only after every attempt fails.
+        last_error: Exception | None = None
+        for attempt, pause in enumerate((0, 5, 15)):
+            if pause:
+                time.sleep(pause)
+            try:
+                proc = subprocess.run(
+                    [sys.executable, str(self.config.gemini_helper), "chat"],
+                    input=json.dumps(body),
+                    capture_output=True,
+                    text=True,
+                    timeout=150,
+                )
+                if proc.returncode != 0:
+                    raise RuntimeError(f"gemini helper failed: {proc.stderr.strip()[-400:]}")
+                data = json.loads(proc.stdout)
+                return data["choices"][0]["message"]["content"]
+            except Exception as exc:  # timeout, helper error, bad payload
+                last_error = exc
+        raise RuntimeError(f"gemini connector failed after retries: {last_error}")
+
+
 def get_llm(config: Config) -> HeuristicLLM:
+    if config.llm_backend == "gemini-connector":
+        return GeminiConnectorLLM(config)
+    if config.llm_backend == "heuristic":
+        return HeuristicLLM()
     if config.llm_api_key:
         return OpenAIChatLLM(config)
     return HeuristicLLM()

@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deep Literature Search</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">🔎 Deep Literature Search</div>
+  <div class="topbar-right">
+    <span id="backend-status" class="backend-status">connecting…</span>
+    <button id="btn-import-doi" class="btn btn-ghost">导入 DOI</button>
+    <button id="btn-library" class="btn btn-ghost">论文库</button>
+  </div>
+</header>
+
+<div class="layout">
+  <!-- Left: searches + files -->
+  <aside class="sidebar">
+    <button id="btn-new-search" class="btn btn-primary btn-block">＋ 新检索</button>
+    <button id="btn-new-trace" class="btn btn-block">◎ 从一篇论文扩展</button>
+    <h3>检索历史</h3>
+    <div id="search-list" class="search-list"></div>
+    <h3>文件（报告 / 表格）</h3>
+    <div id="file-list" class="file-list"></div>
+  </aside>
+
+  <!-- Center: results -->
+  <main class="main">
+    <div id="welcome" class="welcome">
+      <h2>输入一个研究问题，剩下的交给它</h2>
+      <p>系统会先澄清问题、生成检索标准，然后跨 Semantic Scholar / OpenAlex / Crossref
+         检索，逐篇打分，并顺着引用关系网扩展，最后给出带引用的论文集。</p>
+      <button class="btn btn-primary" onclick="document.getElementById('btn-new-search').click()">开始一次新检索</button>
+    </div>
+
+    <div id="search-detail" class="hidden">
+      <div class="detail-head">
+        <h2 id="detail-question"></h2>
+        <div id="detail-meta" class="detail-meta"></div>
+        <div id="detail-criteria" class="criteria-chips"></div>
+        <div class="detail-actions">
+          <button id="btn-report" class="btn btn-primary">生成报告</button>
+          <button id="btn-extract" class="btn">抽取对比表</button>
+          <button id="btn-updates" class="btn">检查新论文</button>
+          <span class="export-group">
+            <button class="btn" data-export="csv">导出 CSV</button>
+            <button class="btn" data-export="bibtex">BibTeX</button>
+            <button class="btn" data-export="ris">RIS</button>
+          </span>
+        </div>
+      </div>
+      <table class="papers-table">
+        <thead>
+          <tr><th class="col-match">MATCH</th><th>论文</th><th class="col-cit">引用/年</th><th class="col-star"></th></tr>
+        </thead>
+        <tbody id="papers-body"></tbody>
+      </table>
+      <div id="papers-empty" class="empty hidden">这个检索还没有入选论文。</div>
+    </div>
+
+    <div id="library-view" class="hidden">
+      <div class="detail-head">
+        <h2>论文库</h2>
+        <div class="detail-meta"><span id="library-count"></span>
+          <label class="star-filter"><input type="checkbox" id="chk-starred"> 只看收藏 ★</label>
+        </div>
+      </div>
+      <table class="papers-table">
+        <thead><tr><th class="col-match">KEY</th><th>论文</th><th class="col-cit">引用/年</th><th class="col-star"></th></tr></thead>
+        <tbody id="library-body"></tbody>
+      </table>
+    </div>
+  </main>
+
+  <!-- Right: inspector tabs -->
+  <aside class="inspector">
+    <div class="tabs">
+      <button class="tab active" data-tab="progress">进度</button>
+      <button class="tab" data-tab="report">报告</button>
+      <button class="tab" data-tab="table">表格</button>
+      <button class="tab" data-tab="ask">问答</button>
+    </div>
+    <div id="tab-progress" class="tab-page">
+      <div id="job-log" class="job-log"><p class="muted">暂无运行中的任务。发起检索、报告或抽取后，这里会实时显示进度。</p></div>
+    </div>
+    <div id="tab-report" class="tab-page hidden">
+      <div id="report-view" class="markdown"><p class="muted">还没有报告。在中间面板点「生成报告」。</p></div>
+    </div>
+    <div id="tab-table" class="tab-page hidden">
+      <div id="extract-bar" class="extract-bar hidden">
+        <input id="extract-columns" type="text" placeholder="列名，逗号分隔：paper, year, method, dataset">
+        <button id="btn-do-extract" class="btn btn-primary">抽取</button>
+      </div>
+      <div id="table-view" class="markdown"><p class="muted">还没有表格。点「抽取对比表」并指定列名。</p></div>
+    </div>
+    <div id="tab-ask" class="tab-page hidden">
+      <div id="ask-log" class="ask-log"><p class="muted">基于当前检索的入选论文提问，例如：哪些用了表格画像？</p></div>
+      <div class="ask-bar">
+        <input id="ask-input" type="text" placeholder="输入问题，回车发送">
+        <button id="btn-ask" class="btn btn-primary">问</button>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<!-- New search dialog -->
+<dialog id="dlg-search">
+  <form method="dialog" class="dlg">
+    <h3>新检索</h3>
+    <label>研究问题
+      <textarea id="ns-question" rows="3" placeholder="例如：用大语言模型为表格数据集自动生成自然语言描述的方法"></textarea>
+    </label>
+    <div id="ns-plan-area" class="hidden">
+      <h4>澄清问题（可留空）</h4>
+      <div id="ns-questions"></div>
+      <h4>检索标准（可编辑，一行一条）</h4>
+      <textarea id="ns-criteria" rows="5"></textarea>
+    </div>
+    <div class="dlg-actions">
+      <button type="button" id="ns-plan" class="btn">先澄清并生成标准</button>
+      <span class="flex-spacer"></span>
+      <button type="button" class="btn" onclick="this.closest('dialog').close()">取消</button>
+      <button type="button" id="ns-launch" class="btn btn-primary">开始检索</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Trace dialog -->
+<dialog id="dlg-trace">
+  <form method="dialog" class="dlg">
+    <h3>从一篇论文扩展（引用图谱）</h3>
+    <label>种子论文（DOI / 引用 KEY / 标题关键词）
+      <input id="tr-seed" type="text" placeholder="例如 10.1145/3786626">
+    </label>
+    <label>按什么问题打分（留空则按种子论文本身）
+      <input id="tr-question" type="text" placeholder="可选">
+    </label>
+    <div class="dlg-actions">
+      <span class="flex-spacer"></span>
+      <button type="button" class="btn" onclick="this.closest('dialog').close()">取消</button>
+      <button type="button" id="tr-launch" class="btn btn-primary">开始扩展</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Import DOI dialog -->
+<dialog id="dlg-doi">
+  <form method="dialog" class="dlg">
+    <h3>导入 DOI</h3>
+    <label>DOI <input id="doi-input" type="text" placeholder="10.xxxx/xxxxx"></label>
+    <div class="dlg-actions">
+      <span class="flex-spacer"></span>
+      <button type="button" class="btn" onclick="this.closest('dialog').close()">取消</button>
+      <button type="button" id="doi-launch" class="btn btn-primary">导入</button>
+    </div>
+  </form>
+</dialog>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

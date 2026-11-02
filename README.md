@@ -47,6 +47,7 @@ dls import-bibtex refs.bib        # Zotero users: export BibTeX, then this
 dls export 1 --format bibtex --out refs.bib
 dls updates 1                     # check search #1 for newly published papers
 dls serve --port 8765             # local web UI (Searches / Papers / Updates / reports)
+dls api --port 8000               # HTTP API + web workbench in webapp/ (needs: pip install -e ".[api]")
 dls mcp                           # MCP server on stdio (deep_search, search_papers, get_paper)
 python -m unittest discover -s tests
 ```
@@ -60,6 +61,7 @@ Data lives in `~/.dls/` (override with `DLS_HOME`).
 | `SEMANTIC_SCHOLAR_API_KEY` | Strongly recommended. Without it, Semantic Scholar's shared anonymous pool throttles hard (frequent 429s); a free key gives a dedicated 1 req/s |
 | `OPENALEX_API_KEY` | OpenAlex moved to keyed, credit-based access in 2026; without a key the secondary channel may be unavailable and the engine degrades gracefully |
 | `LLM_API_KEY` (+ `LLM_BASE_URL`, `LLM_MODEL`) | Any OpenAI-compatible endpoint. Enables generated brainstorming/criteria, LLM-judged MATCH scores, synthesized reports, extraction and Q&A. Without it, a deterministic heuristic backend runs the same pipeline offline |
+| `DLS_LLM_BACKEND` | `auto` (default) \| `gemini-connector` \| `heuristic`. `gemini-connector` routes LLM calls through a locally registered Gemini connector helper (`DLS_GEMINI_HELPER`), so the API key never touches this process; default model becomes `gemini-3.8-flash` |
 | `CROSSREF_EMAIL` | Polite-pool contact for Crossref |
 
 ## Docs
@@ -73,3 +75,5 @@ Data lives in `~/.dls/` (override with `DLS_HOME`).
 - 2026-11-02: project seeded; behavior spec v0.1 from public sources.
 - 2026-11-02: behavior spec **v0.2 measured edition** (logged-in run: 52 papers, AutoDDG top match at 100%).
 - 2026-11-02: **v0.1 implementation** — full pipeline working: brainstorming → criteria → multi-source search (Semantic Scholar + OpenAlex + Crossref fallback) → MATCH scoring → citation snowballing with convergence → capture–recapture discovery estimate → cited reports, chat extraction, follow-up Q&A, library with stars/folders, DOI/BibTeX/PDF import, CSV/BibTeX/RIS export, update checks, web UI, MCP server. 10 offline unit tests pass; a live smoke run (Crossref channel, while S2/OpenAlex anonymous pools were throttling) found real on-topic papers end-to-end.
+- 2026-11-02: **Gemini connector LLM backend** (`DLS_LLM_BACKEND=gemini-connector`) — the same prompts/scoring/report code, transported through a credential-isolated helper; verified live against a free-tier Gemini key (first head-to-head vs the heuristic backend: two genuinely model-judged papers, incl. one relevant paper the lexical backend missed entirely).
+- 2026-11-02: **HTTP API + web workbench (v0.2)** — `dls api` serves a FastAPI backend (`dls/api.py`): minute-long operations (search / trace / report / extract / updates) run as background jobs with a Server-Sent-Events progress stream; searches, papers, files, import/export are plain REST. The frontend in `webapp/` is a dependency-free ES-module SPA (no build step): three-pane workbench — search history & files · results table with MATCH scores and provenance · progress/report/table/ask tabs. 23 tests pass (6 new API tests, fully offline); a live smoke run completed a real search through the API end-to-end.

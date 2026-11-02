@@ -30,6 +30,8 @@ class Config:
     llm_api_key: str | None = None         # LLM_API_KEY / OPENAI_API_KEY
     llm_base_url: str = "https://api.openai.com/v1"
     llm_model: str = "gpt-4o-mini"
+    llm_backend: str = "auto"              # DLS_LLM_BACKEND: auto | gemini-connector | heuristic
+    gemini_helper: Path = Path.home() / "workspace/custom-connectors/custom.gemini/bin/gemini.py"  # DLS_GEMINI_HELPER
 
     # Storage
     data_dir: Path = Path.home() / ".dls"
@@ -37,13 +39,19 @@ class Config:
     @classmethod
     def from_env(cls) -> "Config":
         data_dir = os.environ.get("DLS_HOME")
+        backend = os.environ.get("DLS_LLM_BACKEND", "auto")
+        # Gemini retired 2.5 Flash for new users; 3.8 Flash is the default there.
+        default_model = "gemini-3.8-flash" if backend == "gemini-connector" else "gpt-4o-mini"
+        helper = os.environ.get("DLS_GEMINI_HELPER")
         return cls(
             s2_api_key=_first_env("SEMANTIC_SCHOLAR_API_KEY", "S2_API_KEY"),
             openalex_api_key=_first_env("OPENALEX_API_KEY"),
             contact_email=_first_env("CROSSREF_EMAIL", "OPENALEX_EMAIL"),
             llm_api_key=_first_env("LLM_API_KEY", "OPENAI_API_KEY"),
             llm_base_url=os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1"),
-            llm_model=os.environ.get("LLM_MODEL", "gpt-4o-mini"),
+            llm_model=os.environ.get("LLM_MODEL", default_model),
+            llm_backend=backend,
+            gemini_helper=Path(helper) if helper else Path.home() / "workspace/custom-connectors/custom.gemini/bin/gemini.py",
             data_dir=Path(data_dir) if data_dir else Path.home() / ".dls",
         )
 
