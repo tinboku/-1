@@ -6,10 +6,54 @@ import csv
 import html
 import io
 import re
+from pathlib import Path
 
 from .llm import HeuristicLLM
 from .models import Paper
 from .store import Store
+
+
+# These are paper-level availability checks, not semantic entailment checks.
+# Bracket tokens in Markdown links/images are not paper citations.
+def verify_report(report_md: str, papers: list[Paper]) -> dict:
+    body = report_md.split("\n## 证据摘录\n", 1)[0].split("\n## 证据核查\n", 1)[0]
+    keys = list(dict.fromkeys(re.findall(r"(?<!!)\[([^\]\n]+)\](?!\()", body)))
+    by_key = {p.key: p for p in papers if p.key}
+    citations = []
+    for key in keys:
+        paper = by_key.get(key)
+        scope, reason = "none", "unknown citation KEY"
+        if paper is not None:
+            scope, reason = "none", "no abstract or readable full text record"
+            if paper.abstract and paper.abstract.strip():
+                scope, reason = "abstract", "stored abstract available"
+            if paper.fulltext_status == "ok" and paper.fulltext_path:
+                try:
+                    if Path(paper.fulltext_path).read_text(encoding="utf-8").strip():
+                        scope, reason = "fulltext", "readable full text cache available"
+                    elif scope == "none":
+                        reason = "empty full text cache"
+                except (OSError, UnicodeError) as exc:
+                    reason = f"full text cache unavailable: {exc}; " + reason
+            elif paper.fulltext_error:
+                reason += f"; full text: {paper.fulltext_error}"
+        citations.append({"key": key, "exists": paper is not None,
+                          "traceable": scope != "none", "evidence_scope": scope, "reason": reason})
+    traceable = sum(c["traceable"] for c in citations)
+    return {"total": len(citations), "traceable": traceable,
+            "untraceable": len(citations) - traceable, "no_citations": not citations,
+            "citations": citations}
+
+
+def _verification_markdown(result: dict) -> str:
+    lines = ["", "## 证据核查", "",
+             "仅核查 KEY 和摘要/全文记录可回查性；不代表原文在语义上支持每项主张。", ""]
+    if result["no_citations"]:
+        lines.append("- 无引用：未发现 [KEY] 引用，无法建立引用证据链。")
+    for item in result["citations"]:
+        label = "可追溯" if item["traceable"] else "不可追溯"
+        lines.append(f"- [{item['key']}] {label} · evidence_scope={item['evidence_scope']} · {item['reason']}")
+    return "\n".join(lines) + "\n"
 
 
 def generate_report(
@@ -23,7 +67,27 @@ def generate_report(
     if not search:
         raise ValueError(f"search {search_id} not found")
     papers = store.search_papers(search_id, included_only=True)
+    from .fulltext import extract_sections
+
+    evidence_lines = ["", "## 证据摘录", "",
+                      "以下为原文摘录；离线模式按章节开头抽取，不作语义支持判断。", ""]
+    for paper in papers:
+        text, error = store.read_fulltext(paper)
+        sections = extract_sections(text) if text else {}
+        summarize = getattr(llm, "summarize_evidence", HeuristicLLM().summarize_evidence)
+        paper.evidence = summarize(paper, sections, search["question"])
+        if error:
+            evidence_lines.append(f"- [{paper.key}] 全文降级：{error}；使用摘要（如有）。")
+        for kind, item in paper.evidence.items():
+            evidence_lines.append(
+                f"- [{paper.key}] {kind} · evidence_scope={item['evidence_scope']} · "
+                f"section={item['section'] or 'none'} · 原文：{item['quote'] or '无可用证据'}"
+            )
+            if item.get("reason"):
+                evidence_lines.append(f"  原因：{item['reason']}")
     md = llm.write_report(search["question"], search["criteria"], papers, focus)
+    verification = verify_report(md, papers)
+    md += "\n" + "\n".join(evidence_lines) + "\n" + _verification_markdown(verification)
     # Title for the file: first 60 chars of the question.
     name = search["question"][:60].strip()
     file_id = store.save_file(project, "report", name, md)

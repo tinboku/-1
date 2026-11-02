@@ -23,6 +23,10 @@ class Paper:
     source: str = "semantic_scholar"
     sources: list[str] = field(default_factory=list)  # every channel that found it
 
+    fulltext_path: str | None = None
+    fulltext_status: str = "none"  # none / failed / ok; a PDF link is not a read
+    fulltext_error: str | None = None
+
     # Filled in by scoring / storage layers
     key: str | None = None        # citation key, e.g. "Zha25"
     match: float | None = None    # 0..100 relevance to a search's criteria
@@ -67,6 +71,9 @@ class SearchOutcome:
     converged: bool
     coverage: dict | None  # discovery-curve estimate, see engine.estimate_coverage
     warnings: list[str] = field(default_factory=list)
+    degraded: bool = False
+    stop_reason: str | None = None
+    query_history: list[dict] = field(default_factory=list)
 
     @property
     def found(self) -> int:

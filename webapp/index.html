@@ -8,14 +8,16 @@
 </head>
 <body>
 <header class="topbar">
-  <div class="brand">🔎 Deep Literature Search</div>
+  <div class="brand"><span class="brand-mark">dls</span> Research Workbench</div>
   <div class="topbar-right">
     <span id="backend-status" class="backend-status">connecting…</span>
+    <button id="btn-import-bibtex" class="btn btn-ghost">导入 BibTeX</button>
     <button id="btn-import-doi" class="btn btn-ghost">导入 DOI</button>
     <button id="btn-library" class="btn btn-ghost">论文库</button>
   </div>
 </header>
 
+<div id="notice" role="status" aria-live="polite" class="notice hidden"></div>
 <div class="layout">
   <!-- Left: searches + files -->
   <aside class="sidebar">
@@ -30,9 +32,10 @@
   <!-- Center: results -->
   <main class="main">
     <div id="welcome" class="welcome">
-      <h2>输入一个研究问题，剩下的交给它</h2>
+      <div class="eyebrow">YOUR RESEARCH, CONNECTED</div><h2>从一个好问题，走向有据可循的研究。</h2>
       <p>系统会先澄清问题、生成检索标准，然后跨 Semantic Scholar / OpenAlex / Crossref
          检索，逐篇打分，并顺着引用关系网扩展，最后给出带引用的论文集。</p>
+      <div class="workflow"><span>01 澄清问题</span><span>02 确认标准</span><span>03 深度搜索</span><span>04 综合与追问</span></div>
       <button class="btn btn-primary" onclick="document.getElementById('btn-new-search').click()">开始一次新检索</button>
     </div>
 
@@ -40,6 +43,7 @@
       <div class="detail-head">
         <h2 id="detail-question"></h2>
         <div id="detail-meta" class="detail-meta"></div>
+        <div id="search-warnings" aria-live="polite"></div>
         <div id="detail-criteria" class="criteria-chips"></div>
         <div class="detail-actions">
           <button id="btn-report" class="btn btn-primary">生成报告</button>
@@ -52,12 +56,12 @@
           </span>
         </div>
       </div>
-      <table class="papers-table">
+      <div class="table-scroll"><table class="papers-table">
         <thead>
           <tr><th class="col-match">MATCH</th><th>论文</th><th class="col-cit">引用/年</th><th class="col-star"></th></tr>
         </thead>
         <tbody id="papers-body"></tbody>
-      </table>
+      </table></div>
       <div id="papers-empty" class="empty hidden">这个检索还没有入选论文。</div>
     </div>
 
@@ -67,11 +71,15 @@
         <div class="detail-meta"><span id="library-count"></span>
           <label class="star-filter"><input type="checkbox" id="chk-starred"> 只看收藏 ★</label>
         </div>
+        <div class="library-tools">
+          <label>收藏夹筛选 <input id="folder-filter" placeholder="所有收藏夹（输入名称筛选）"></label><button id="folder-apply" class="btn">筛选</button>
+          <label>查找论文 <input id="lookup-input" placeholder="引用 KEY / DOI / arXiv / paper ID"></label><button id="paper-lookup" class="btn">查找</button>
+        </div>
       </div>
-      <table class="papers-table">
+      <div class="table-scroll"><table class="papers-table">
         <thead><tr><th class="col-match">KEY</th><th>论文</th><th class="col-cit">引用/年</th><th class="col-star"></th></tr></thead>
         <tbody id="library-body"></tbody>
-      </table>
+      </table></div>
     </div>
   </main>
 
@@ -79,13 +87,15 @@
   <aside class="inspector">
     <div class="tabs">
       <button class="tab active" data-tab="progress">进度</button>
+      <button class="tab" data-tab="paper">论文</button>
       <button class="tab" data-tab="report">报告</button>
       <button class="tab" data-tab="table">表格</button>
       <button class="tab" data-tab="ask">问答</button>
     </div>
     <div id="tab-progress" class="tab-page">
-      <div id="job-log" class="job-log"><p class="muted">暂无运行中的任务。发起检索、报告或抽取后，这里会实时显示进度。</p></div>
+      <div id="job-log" class="job-log" role="log" aria-live="polite"><p class="muted">暂无运行中的任务。发起检索、报告或抽取后，这里会实时显示进度。</p></div>
     </div>
+    <div id="tab-paper" class="tab-page hidden"><div id="paper-detail"><p class="muted">选择论文查看摘要、引用和发现路径。</p></div></div>
     <div id="tab-report" class="tab-page hidden">
       <div id="report-view" class="markdown"><p class="muted">还没有报告。在中间面板点「生成报告」。</p></div>
     </div>
@@ -109,7 +119,7 @@
 <!-- New search dialog -->
 <dialog id="dlg-search">
   <form method="dialog" class="dlg">
-    <h3>新检索</h3>
+    <div class="eyebrow">NEW RESEARCH</div><h3>定义你的研究问题</h3><p class="muted">先澄清范围，再确认逐篇评估的 Search Criteria。</p>
     <label>研究问题
       <textarea id="ns-question" rows="3" placeholder="例如：用大语言模型为表格数据集自动生成自然语言描述的方法"></textarea>
     </label>
@@ -118,12 +128,14 @@
       <div id="ns-questions"></div>
       <h4>检索标准（可编辑，一行一条）</h4>
       <textarea id="ns-criteria" rows="5"></textarea>
+      <p id="ns-plan-hint" class="muted" aria-live="polite"></p>
+      <label class="confirm-label"><input id="ns-confirm" type="checkbox">我已审阅并确认 Search Criteria</label>
     </div>
     <div class="dlg-actions">
       <button type="button" id="ns-plan" class="btn">先澄清并生成标准</button>
       <span class="flex-spacer"></span>
       <button type="button" class="btn" onclick="this.closest('dialog').close()">取消</button>
-      <button type="button" id="ns-launch" class="btn btn-primary">开始检索</button>
+      <button type="button" id="ns-launch" class="btn btn-primary" disabled>开始检索</button>
     </div>
   </form>
 </dialog>
@@ -159,6 +171,14 @@
   </form>
 </dialog>
 
+<dialog id="dlg-bibtex">
+  <form method="dialog" class="dlg">
+    <h3>导入 BibTeX 到论文库</h3>
+    <label>选择 .bib 文件<input id="bibtex-file" type="file" accept=".bib,.bibtex,text/plain"></label>
+    <label>或粘贴 BibTeX<textarea id="bibtex-content" rows="9" placeholder="@article{key,&#10;  title={...}, author={...}, year={2025}&#10;}"></textarea></label>
+    <div class="dlg-actions"><button type="button" class="btn" onclick="this.closest('dialog').close()">取消</button><button type="button" id="bibtex-launch" class="btn btn-primary">导入论文库</button></div>
+  </form>
+</dialog>
 <script type="module" src="js/app.js"></script>
 </body>
 </html>

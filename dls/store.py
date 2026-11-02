@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
+import tempfile
 import sqlite3
 import time
 from pathlib import Path
@@ -76,6 +79,7 @@ CREATE TABLE IF NOT EXISTS updates (
 
 class Store:
     def __init__(self, db_path: Path):
+        self.fulltext_dir = db_path.parent / "fulltext"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         # check_same_thread=False: the web UI serves requests from worker
         # threads. SQLite itself serializes writers; our transactions are
@@ -87,7 +91,59 @@ class Store:
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(search_results)")}
         if "provenance" not in cols:
             self.conn.execute("ALTER TABLE search_results ADD COLUMN provenance TEXT")
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(searches)")}
+        for name, definition in (
+            ("degraded", "INTEGER NOT NULL DEFAULT 0"),
+            ("warnings", "TEXT NOT NULL DEFAULT '[]'"),
+            ("converged", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if name not in cols:
+                self.conn.execute(f"ALTER TABLE searches ADD COLUMN {name} {definition}")
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(papers)")}
+        for name, definition in (
+            ("fulltext_path", "TEXT"),
+            ("fulltext_status", "TEXT NOT NULL DEFAULT 'none'"),
+            ("fulltext_error", "TEXT"),
+        ):
+            if name not in cols:
+                self.conn.execute(f"ALTER TABLE papers ADD COLUMN {name} {definition}")
         self.conn.commit()
+
+    def save_fulltext(self, db_id: int, text: str | None, error: str | None = None) -> Paper:
+        paper = self.get_paper(db_id)
+        if paper is None:
+            raise ValueError(f"paper {db_id} not found")
+        path = None
+        if text and text.strip():
+            self.fulltext_dir.mkdir(parents=True, exist_ok=True)
+            target = self.fulltext_dir / (hashlib.sha256(text.encode("utf-8")).hexdigest() + ".txt")
+            temp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.fulltext_dir,
+                                                 delete=False) as tmp:
+                    temp_path = Path(tmp.name)
+                    tmp.write(text)
+                os.replace(temp_path, target)
+            finally:
+                if temp_path is not None:
+                    temp_path.unlink(missing_ok=True)
+            path = str(target.resolve())
+        status = "ok" if path else "failed"
+        self.conn.execute(
+            "UPDATE papers SET fulltext_path = ?, fulltext_status = ?, fulltext_error = ? WHERE id = ?",
+            (path, status, None if path else (error or "empty full text"), db_id),
+        )
+        self.conn.commit()
+        return self.get_paper(db_id)
+
+    def read_fulltext(self, paper: Paper) -> tuple[str | None, str | None]:
+        if paper.fulltext_status != "ok" or not paper.fulltext_path:
+            return None, paper.fulltext_error or "full text not read"
+        try:
+            text = Path(paper.fulltext_path).read_text(encoding="utf-8")
+            return (text, None) if text.strip() else (None, "empty full text cache")
+        except (OSError, UnicodeError) as exc:
+            return None, f"full text cache unavailable: {exc}"
 
     # -- projects ---------------------------------------------------------
     def project_id(self, name: str = "default") -> int:
@@ -167,6 +223,9 @@ class Store:
             url=row["url"],
             tldr=row["tldr"],
             source=row["source"] or "import",
+            fulltext_path=row["fulltext_path"],
+            fulltext_status=row["fulltext_status"],
+            fulltext_error=row["fulltext_error"],
         )
         p.key = row["key"]
         p.db_id = int(row["id"])  # type: ignore[attr-defined]
@@ -221,7 +280,8 @@ class Store:
         self.conn.commit()
         return int(cur.lastrowid)
 
-    def save_results(self, search_id: int, scored: list[Paper], included_ids: set[int], counts: dict, coverage: dict | None) -> None:
+    def save_results(self, search_id: int, scored: list[Paper], included_ids: set[int], counts: dict, coverage: dict | None,
+                     *, degraded: bool = False, warnings: list[str] | None = None, converged: bool = False) -> None:
         rank = 0
         for paper in scored:
             db_id = getattr(paper, "db_id", None)
@@ -237,8 +297,9 @@ class Store:
                 (search_id, db_id, paper.match, paper.match_reason, 1 if is_included else 0, rank if is_included else None, paper.found_via),
             )
         self.conn.execute(
-            "UPDATE searches SET counts = ?, coverage = ? WHERE id = ?",
-            (json.dumps(counts), json.dumps(coverage) if coverage else None, search_id),
+            "UPDATE searches SET counts = ?, coverage = ?, degraded = ?, warnings = ?, converged = ? WHERE id = ?",
+            (json.dumps(counts), json.dumps(coverage) if coverage else None,
+             int(degraded), json.dumps(warnings or []), int(converged), search_id),
         )
         self.conn.commit()
 
@@ -254,6 +315,9 @@ class Store:
             "answers": json.loads(row["answers"] or "{}"),
             "counts": json.loads(row["counts"] or "{}"),
             "coverage": json.loads(row["coverage"]) if row["coverage"] else None,
+            "degraded": bool(row["degraded"]),
+            "warnings": json.loads(row["warnings"] or "[]"),
+            "converged": bool(row["converged"]),
             "created_at": row["created_at"],
         }
 

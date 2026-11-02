@@ -12,13 +12,15 @@ import time
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 try:
     from fastapi.testclient import TestClient
 except ImportError:  # pragma: no cover
     raise unittest.SkipTest("fastapi not installed (pip install -e .[api])")
 
-from dls.api import create_app
+from dls.api import create_app, paper_dict
+from dls.engine import DeepSearchEngine
 from dls.models import Paper, SearchOutcome
 from dls.store import Store
 
@@ -95,6 +97,149 @@ class ApiTest(unittest.TestCase):
         self.ctx = _fake_ctx(self.tmp)
         self.client = TestClient(create_app(self.ctx))
 
+    def tearDown(self):
+        self.client.app.state.jobs._pool.shutdown(wait=True)
+        self.client.close()
+        self.ctx.store.conn.close()
+
+    def _search(self, **payload):
+        response = self.client.post("/api/searches", json={"question": "q", **payload})
+        return _wait_job(self.client, response.json()["job_id"])
+
+    def test_plan_answers_reach_criteria_builder(self):
+        received = []
+        self.ctx.engine.build_criteria = lambda q, answers: received.append(answers) or [answers["Scope?"]]
+        response = self.client.post("/api/plan", json={"question": "q", "answers": {"Scope?": "tabular only"}})
+        self.assertEqual(response.json()["criteria"], ["tabular only"])
+        self.assertEqual(received, [{"Scope?": "tabular only"}])
+
+    def test_search_preserves_edited_criteria_and_answers(self):
+        snap = self._search(criteria=["edited criterion"], answers={"Scope?": "tables"})
+        detail = self.client.get(f"/api/searches/{snap['result']['search_id']}").json()
+        self.assertEqual(detail["criteria"], ["edited criterion"])
+        self.assertEqual(detail["answers"], {"Scope?": "tables"})
+
+    def test_job_list_recovers_running_job_without_store_lock(self):
+        import threading
+        started, release = threading.Event(), threading.Event()
+        def work(job):
+            started.set()
+            release.wait(3)
+            return {"file_id": 7}
+        job = self.client.app.state.jobs.submit("report", work, search_id=42)
+        try:
+            self.assertTrue(started.wait(1))
+            with self.ctx.store.conn:
+                listing = self.client.get("/api/jobs").json()
+            self.assertEqual(listing[0]["id"], job.id)
+            self.assertEqual(listing[0]["status"], "running")
+            self.assertEqual(listing[0]["search_id"], 42)
+            self.assertNotIn("events", listing[0])
+        finally:
+            release.set()
+
+    def test_job_snapshot_replays_all_events(self):
+        snap = self._search()
+        again = self.client.get(f"/api/jobs/{snap['id']}").json()
+        self.assertEqual(again["events"], snap["events"])
+        self.assertTrue(all("stage" in e and "detail" in e for e in again["events"]))
+
+    def test_search_exposes_session_warnings(self):
+        run = self.ctx.engine.run
+        def warned(*args, **kwargs):
+            result = run(*args, **kwargs)
+            result.warnings = ["OpenAlex unavailable"]
+            return result
+        self.ctx.engine.run = warned
+        snap = self._search()
+        self.assertTrue(snap["result"]["degraded"])
+        detail = self.client.get(f"/api/searches/{snap['result']['search_id']}").json()
+        self.assertEqual(detail["warnings"], ["OpenAlex unavailable"])
+        self.assertTrue(detail["degraded"])
+
+    def test_historical_search_does_not_invent_warnings(self):
+        sid = self.ctx.store.create_search("default", "old", [], {})
+        detail = self.client.get(f"/api/searches/{sid}").json()
+        self.assertEqual(detail["warnings"], [])
+        self.assertFalse(detail["degraded"])
+
+    def test_stored_diagnostics_survive_without_session_job(self):
+        sid = self.ctx.store.create_search("default", "stored", [], {})
+        self.ctx.store.save_results(sid, [], set(), {}, None,
+                                    degraded=True, warnings=["source offline"], converged=False)
+        detail = self.client.get(f"/api/searches/{sid}").json()
+        self.assertEqual(detail["warnings"], ["source offline"])
+        self.assertTrue(detail["degraded"])
+        self.assertFalse(detail["converged"])
+
+    def test_stop_reason_reaches_job_and_search_detail(self):
+        run = self.ctx.engine.run
+        def stopped(*args, **kwargs):
+            outcome = run(*args, **kwargs)
+            outcome.stop_reason = "No new candidates after deduplication."
+            return outcome
+        self.ctx.engine.run = stopped
+        snap = self._search()
+        self.assertEqual(snap["status"], "done", snap)
+        self.assertEqual(snap["result"]["stop_reason"], "No new candidates after deduplication.")
+        detail = self.client.get(f"/api/searches/{snap['result']['search_id']}").json()
+        self.assertEqual(detail["stop_reason"], snap["result"]["stop_reason"])
+
+    def test_paper_score_source_is_explicit_or_unknown(self):
+        paper = _paper()
+        self.assertIsNone(paper_dict(paper)["match_source"])
+        paper.match_source = "heuristic"
+        self.assertEqual(paper_dict(paper)["match_source"], "heuristic")
+
+    def test_lookup_and_paper_detail_provenance(self):
+        snap = self._search()
+        paper = self.client.get(f"/api/searches/{snap['result']['search_id']}").json()["papers"][0]
+        for identifier in [paper["key"], paper["doi"], paper["paper_id"]]:
+            result = self.client.get("/api/papers/lookup", params={"identifier": identifier})
+            self.assertEqual(result.json()["abstract"], _paper().abstract)
+        self.assertEqual(paper["found_via"], "search")
+        self.assertEqual(self.client.get("/api/papers/lookup?identifier=missing").status_code, 404)
+
+    def test_folder_filter_and_clear(self):
+        self._search()
+        pid = self.client.get("/api/papers").json()[0]["db_id"]
+        self.client.post(f"/api/papers/{pid}/folder", json={"folder": "综述"})
+        self.assertEqual(len(self.client.get("/api/papers", params={"folder": "综述"}).json()), 1)
+        self.assertEqual(self.client.get("/api/papers?folder=other").json(), [])
+        self.client.post(f"/api/papers/{pid}/folder", json={"folder": None})
+        self.assertEqual(self.client.get("/api/papers").json()[0]["folder"], None)
+
+    def test_bibtex_import_from_content(self):
+        response = self.client.post("/api/import/bibtex", json={"content": "@article{test,\n title={Imported Paper}, author={Alice Smith}, year={2024}\n}"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["imported"], 1)
+        self.assertEqual(self.client.get("/api/papers").json()[0]["title"], "Imported Paper")
+        self.assertEqual(list(self.ctx.config.files_dir.glob("import-*.bib")), [])
+        invalid = self.client.post("/api/import/bibtex", json={"content": "not bibtex"})
+        self.assertEqual(invalid.status_code, 422)
+        self.assertEqual(list(self.ctx.config.files_dir.glob("import-*.bib")), [])
+
+    def test_report_and_extract_jobs_have_search_context(self):
+        sid = self._search()["result"]["search_id"]
+        self.ctx.llm.write_report = lambda *args: "# Report\n[Zhang25]"
+        self.ctx.llm.extract_row = lambda paper, columns: {"title": paper.title}
+        for action, body, expected in [("report", {}, "# Report"), ("extract", {"columns": ["title"]}, "AutoDDG")]:
+            response = self.client.post(f"/api/searches/{sid}/{action}", json=body)
+            snap = _wait_job(self.client, response.json()["job_id"])
+            self.assertEqual(snap["status"], "done", snap)
+            self.assertEqual(snap["search_id"], sid)
+            artifact = self.client.get(f"/api/files/{snap['result']['file_id']}").json()
+            self.assertIn(expected, artifact["content"])
+
+    def test_failed_job_surfaces_real_error(self):
+        def fail(*args, **kwargs):
+            raise RuntimeError("upstream unavailable")
+        self.ctx.engine.run = fail
+        snap = self._search(criteria=["criterion"])
+        self.assertEqual(snap["status"], "error")
+        self.assertIn("upstream unavailable", snap["error"])
+        self.assertIsNone(snap["result"])
+
     def test_health(self):
         r = self.client.get("/api/health")
         self.assertEqual(r.status_code, 200)
@@ -132,6 +277,40 @@ class ApiTest(unittest.TestCase):
         self.assertIn('"type": "progress"', text)
         self.assertIn('"type": "done"', text)
 
+    def test_degraded_search_and_trace_complete_with_diagnostics(self):
+        seed = _paper()
+        self.ctx.store.upsert_paper(seed)
+        s2 = Mock()
+        s2.search.return_value = [seed]
+        s2.citations.side_effect = RuntimeError("citations offline")
+        s2.references.side_effect = RuntimeError("references offline")
+        llm = Mock()
+        llm.score_matches.side_effect = lambda criteria, papers: [(90, "relevant") for _ in papers]
+        llm.reflect.return_value = {"new_queries": [], "stop": False}
+        self.ctx.engine = DeepSearchEngine(s2, None, llm, self.ctx.store)
+
+        for endpoint, body in (
+            ("/api/searches", {"question": "q", "criteria": ["q"]}),
+            ("/api/trace", {"identifier": seed.paper_id}),
+        ):
+            with self.subTest(endpoint=endpoint):
+                response = self.client.post(endpoint, json=body)
+                self.assertEqual(response.status_code, 202)
+                snap = _wait_job(self.client, response.json()["job_id"])
+                self.assertEqual(snap["status"], "done", snap)
+                result = snap["result"]
+                self.assertTrue(result["degraded"])
+                self.assertFalse(result["converged"])
+                self.assertEqual(len(result["warnings"]), 2)
+                detail = self.client.get(f"/api/searches/{result['search_id']}").json()
+                self.assertTrue(detail["degraded"])
+                self.assertFalse(detail["converged"])
+                self.assertEqual(detail["warnings"], result["warnings"])
+                listed = self.client.get("/api/searches").json()
+                stored = next(s for s in listed if s["id"] == result["search_id"])
+                self.assertEqual(stored["warnings"], result["warnings"])
+                self.assertTrue(stored["degraded"])
+
     def test_ask_and_export_and_star(self):
         r = self.client.post("/api/searches", json={"question": "q"})
         snap = _wait_job(self.client, r.json()["job_id"])
@@ -151,6 +330,52 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(star.json()["starred"], True)
         starred = self.client.get("/api/papers", params={"starred": True}).json()
         self.assertEqual(len(starred), 1)
+
+    def test_fulltext_failure_and_cached_success(self):
+        sid = self._search()["result"]["search_id"]
+        paper = self.ctx.store.search_papers(sid)[0]
+        self.ctx.store.conn.execute("UPDATE papers SET oa_pdf = ? WHERE id = ?",
+                                    ("https://example.org/p.pdf", paper.db_id))
+        self.ctx.store.conn.commit()
+        path = f"/api/searches/{sid}/papers/{paper.db_id}/fulltext"
+        with patch("dls.fulltext.download_pdf", return_value=(None, "download timeout")):
+            response = self.client.post(path)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["fulltext_status"], "failed")
+        self.assertEqual(response.json()["fulltext_error"], "download timeout")
+        with patch("dls.fulltext.download_pdf", return_value=(b"%PDF-test", None)), \
+                patch("dls.fulltext.extract_text", return_value=(None, "pypdf not installed")):
+            response = self.client.post(path)
+        self.assertEqual(response.json()["fulltext_error"], "pypdf not installed")
+        with patch("dls.fulltext.download_pdf", return_value=(b"%PDF-test", None)), \
+                patch("dls.fulltext.extract_text", return_value=("Results\nImproved accuracy.", None)):
+            response = self.client.post(path)
+        self.assertEqual(response.json()["fulltext_status"], "ok")
+        with patch("dls.fulltext.download_pdf") as download:
+            self.assertEqual(self.client.post(path).json()["fulltext_status"], "ok")
+        download.assert_not_called()
+        detail = self.client.get(f"/api/searches/{sid}").json()
+        self.assertEqual(detail["papers"][0]["fulltext_status"], "ok")
+
+    def test_fulltext_rejects_nonincluded_and_missing_pdf(self):
+        sid = self._search()["result"]["search_id"]
+        pid = self.ctx.store.search_papers(sid)[0].db_id
+        path = f"/api/searches/{sid}/papers/{pid}/fulltext"
+        self.assertEqual(self.client.post(path).status_code, 422)
+        self.ctx.store.conn.execute("UPDATE search_results SET included = 0 WHERE search_id = ?", (sid,))
+        self.ctx.store.conn.commit()
+        self.assertEqual(self.client.post(path).status_code, 404)
+
+    def test_report_job_returns_verification_summary(self):
+        sid = self._search()["result"]["search_id"]
+        self.ctx.llm.write_report = lambda *args: "# Report\n[Zhang25] and [Fake25]"
+        launched = self.client.post(f"/api/searches/{sid}/report", json={})
+        job = _wait_job(self.client, launched.json()["job_id"])
+        self.assertEqual(job["status"], "done", job)
+        summary = job["result"]["verification"]
+        self.assertEqual(summary["total"], 2)
+        self.assertEqual(summary["traceable"], 1)
+        self.assertEqual(summary["untraceable"], 1)
 
     def test_unknown_job_404(self):
         self.assertEqual(self.client.get("/api/jobs/nope").status_code, 404)
