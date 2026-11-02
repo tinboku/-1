@@ -35,7 +35,7 @@ def check_updates(
         db_id = store.upsert_paper(paper)
         if db_id in known_ids:
             continue
-        score, _reason = llm.score_matches(search["criteria"], [paper])[0]
+        score = llm.score_matches(search["criteria"], [paper])[0].score
         if score >= threshold:
             store.add_update(search_id, db_id)
             fresh.append({"paper_id": db_id, "key": paper.key, "title": paper.title, "year": paper.year, "match": score})

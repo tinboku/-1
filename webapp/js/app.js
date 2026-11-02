@@ -100,6 +100,12 @@ async function runJob(jobId, label) {
   status.className = final.type === "done" ? "status-done" : "status-error";
   status.textContent = final.type === "done" ? "✓ 完成" : `✗ ${final.error || "失败"}`;
   (headEl || $("job-log")).appendChild(status);
+  for (const warning of final.result?.warnings || []) {
+    const row = document.createElement("div");
+    row.className = "status-error";
+    row.textContent = warning;
+    $("job-log").appendChild(row);
+  }
   return final;
 }
 
@@ -152,6 +158,7 @@ function paperRow(p, mode) {
   const first = mode === "library"
     ? `<span class="key">${esc(p.key || "")}</span>`
     : `<span class="score ${scoreClass(p.match ?? 0)}">${p.match != null ? p.match.toFixed(0) : "–"}</span>`;
+  const scoring = p.match_source === "llm" ? "模型评分" : p.match_source === "heuristic" ? "启发式评分" : "评分来源未知";
   const titleLink = p.doi
     ? `<a href="https://doi.org/${esc(p.doi)}" target="_blank" rel="noopener">${esc(p.title)}</a>`
     : esc(p.title);
@@ -163,6 +170,7 @@ function paperRow(p, mode) {
     <td>
       <div class="paper-title">${titleLink}${via}</div>
       <div class="paper-sub">${esc(authors)} · ${p.year ?? "n.d."} · ${esc(p.venue || "")}${pdf}</div>
+      ${mode === "search" ? `<div class="paper-sub">${scoring}${p.match_fallback ? ` · 降级原因：${esc(p.match_fallback)}` : ""}</div>` : ""}
       ${p.match_reason ? `<div class="paper-reason">${esc(p.match_reason)}</div>` : ""}
     </td>
     <td>${p.citations_per_year ?? ""}</td>
@@ -200,6 +208,14 @@ async function openSearch(id) {
   $("detail-meta").innerHTML =
     `<span>入选 ${c.found ?? s.papers.length} 篇</span><span>全文 ${c.with_full_text ?? 0}</span>` +
     `<span>排除 ${c.excluded ?? 0}</span><span>候选 ${c.candidates ?? "?"}</span><span>${cov}</span>`;
+  const fallbacks = c.match_fallbacks || {};
+  const fallbackCount = Object.values(fallbacks).reduce((sum, n) => sum + n, 0);
+  if (fallbackCount) {
+    const warning = document.createElement("span");
+    warning.className = "status-error";
+    warning.textContent = `MATCH 评分降级：${fallbackCount} 篇候选论文使用启发式评分（${Object.entries(fallbacks).map(([reason, n]) => `${reason}: ${n}`).join("，")}）。`;
+    $("detail-meta").appendChild(warning);
+  }
   $("detail-criteria").innerHTML = (s.criteria || []).map((x) => `<span class="chip">${esc(x)}</span>`).join("");
   const body = $("papers-body");
   body.innerHTML = "";

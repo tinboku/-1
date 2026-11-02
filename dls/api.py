@@ -194,6 +194,8 @@ def paper_dict(p: Paper) -> dict:
         "source": p.source,
         "match": p.match,
         "match_reason": p.match_reason,
+        "match_source": p.match_source,
+        "match_fallback": p.match_fallback,
         "found_via": p.found_via,
         "starred": bool(getattr(p, "starred", False)),
         "folder": getattr(p, "folder", None),
