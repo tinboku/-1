@@ -50,6 +50,7 @@ WEBAPP_DIR = Path(__file__).resolve().parent.parent / "webapp"
 class Job:
     id: str
     kind: str
+    search_id: int | None = None
     status: str = "queued"  # queued | running | done | error
     created_at: float = field(default_factory=time.time)
     finished_at: float | None = None
@@ -75,6 +76,7 @@ class Job:
         return {
             "id": self.id,
             "kind": self.kind,
+            "search_id": self.search_id,
             "status": self.status,
             "created_at": self.created_at,
             "finished_at": self.finished_at,
@@ -90,8 +92,8 @@ class JobManager:
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
 
-    def submit(self, kind: str, fn: Callable[[Job], dict]) -> Job:
-        job = Job(id=uuid.uuid4().hex[:12], kind=kind)
+    def submit(self, kind: str, fn: Callable[[Job], dict], search_id: int | None = None) -> Job:
+        job = Job(id=uuid.uuid4().hex[:12], kind=kind, search_id=search_id)
         with self._lock:
             self._jobs[job.id] = job
 
@@ -194,6 +196,7 @@ def paper_dict(p: Paper) -> dict:
         "source": p.source,
         "match": p.match,
         "match_reason": p.match_reason,
+        "match_source": getattr(p, "match_source", None),
         "found_via": p.found_via,
         "starred": bool(getattr(p, "starred", False)),
         "folder": getattr(p, "folder", None),
@@ -280,6 +283,14 @@ def create_app(ctx=None) -> FastAPI:
             if search is None:
                 raise HTTPException(404, "search not found")
             papers = ctx.store.search_papers(search_id, included_only=included_only)
+        # Prefer live job diagnostics; retain stored diagnostics after a restart.
+        related = [j for j in jobs.list() if j.kind in ("search", "trace")
+                   and j.result and j.result.get("search_id") == search_id]
+        result = related[0].result if related else {}
+        search["warnings"] = result.get("warnings", search.get("warnings", []))
+        search["degraded"] = result.get("degraded", search.get("degraded", bool(search["warnings"])))
+        search["converged"] = result.get("converged", search.get("converged", False))
+        search["stop_reason"] = result.get("stop_reason")
         search["papers"] = [paper_dict(p) for p in papers]
         return search
 
@@ -310,6 +321,8 @@ def create_app(ctx=None) -> FastAPI:
                 "converged": outcome.converged,
                 "coverage": outcome.coverage,
                 "warnings": outcome.warnings,
+                "degraded": outcome.degraded or bool(outcome.warnings),
+                "stop_reason": outcome.stop_reason,
             }
 
         job = jobs.submit("search", work)
@@ -330,7 +343,10 @@ def create_app(ctx=None) -> FastAPI:
                 "search_id": outcome.search_id,
                 "found": outcome.found,
                 "excluded": outcome.excluded_count,
+                "converged": outcome.converged,
                 "warnings": outcome.warnings,
+                "degraded": outcome.degraded or bool(outcome.warnings),
+                "stop_reason": outcome.stop_reason,
             }
 
         job = jobs.submit("trace", work)
@@ -347,7 +363,7 @@ def create_app(ctx=None) -> FastAPI:
                 file_id, _md = generate_report(ctx.store, search_id, ctx.llm, focus=body.focus)
             return {"file_id": file_id}
 
-        job = jobs.submit("report", work)
+        job = jobs.submit("report", work, search_id=search_id)
         return {"job_id": job.id}
 
     @app.post("/api/searches/{search_id}/extract", status_code=202)
@@ -367,7 +383,7 @@ def create_app(ctx=None) -> FastAPI:
                 )
             return {"file_id": file_id}
 
-        job = jobs.submit("extract", work)
+        job = jobs.submit("extract", work, search_id=search_id)
         return {"job_id": job.id}
 
     @app.post("/api/searches/{search_id}/ask")
@@ -389,7 +405,7 @@ def create_app(ctx=None) -> FastAPI:
                 fresh = check_updates(ctx.store, search_id, ctx.s2, ctx.llm)
             return {"new_papers": fresh}
 
-        job = jobs.submit("updates", work)
+        job = jobs.submit("updates", work, search_id=search_id)
         return {"job_id": job.id}
 
     @app.get("/api/searches/{search_id}/export")
@@ -476,8 +492,13 @@ def create_app(ctx=None) -> FastAPI:
         tmp = ctx.config.files_dir / f"import-{uuid.uuid4().hex[:8]}.bib"
         ctx.config.ensure_dirs()
         tmp.write_text(body.content, encoding="utf-8")
-        with locked():
-            count = _import_bibtex(ctx.store, tmp)
+        try:
+            with locked():
+                count = _import_bibtex(ctx.store, tmp)
+        finally:
+            tmp.unlink(missing_ok=True)
+        if not count:
+            raise HTTPException(422, "No readable BibTeX entries. Use entries with the closing brace on its own line.")
         return {"imported": count}
 
     # -- jobs ---------------------------------------------------------------------

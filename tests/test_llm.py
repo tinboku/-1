@@ -3,7 +3,7 @@ import unittest
 from unittest import mock
 
 from dls.config import Config
-from dls.llm import GeminiConnectorLLM, HeuristicLLM, get_llm
+from dls.llm import GeminiConnectorLLM, HeuristicLLM, OpenAIChatLLM, get_llm
 
 
 class TestFactory(unittest.TestCase):
@@ -14,6 +14,45 @@ class TestFactory(unittest.TestCase):
     def test_heuristic_backend(self):
         llm = get_llm(Config(llm_backend="heuristic"))
         self.assertIs(type(llm), HeuristicLLM)
+
+
+class TestReflection(unittest.TestCase):
+    def setUp(self):
+        self.llm = OpenAIChatLLM(Config())
+        self.context = {
+            "query_history": [{"query": "中文", "result_count": 0}],
+            "excluded_papers": [{"title": "排除论文", "reason": "out of scope"}],
+            "criteria_coverage": [{"criterion": "中文", "matched_papers": 0}],
+        }
+
+    def test_online_prompt_and_stop_reason(self):
+        response = {"new_queries": ["新查询"], "stop": True, "reason": "范围已覆盖"}
+        with mock.patch.object(self.llm, "_chat", return_value=json.dumps(response)) as chat:
+            self.assertEqual(self.llm.reflect(["中文"], [], 1, context=self.context), response)
+        prompt = chat.call_args.args[1]
+        self.assertEqual(json.loads(prompt.split("Search context:\n")[1]), self.context)
+        self.assertIn("required when stopping", chat.call_args.args[0])
+
+    def test_missing_reason_and_malformed_decisions_fall_back(self):
+        for response in [
+            {"new_queries": [], "stop": True},
+            {"new_queries": [], "stop": True, "reason": " "},
+            {"new_queries": "bad list", "stop": True, "reason": "done"},
+            {"new_queries": [], "stop": "false", "reason": "done"},
+        ]:
+            with self.subTest(response=response), mock.patch.object(
+                self.llm, "_chat", return_value=json.dumps(response)
+            ):
+                result = self.llm.reflect(["中文"], [], 1, context=self.context)
+                self.assertFalse(result["stop"])
+                self.assertTrue(result["reason"].strip())
+
+    def test_transport_failure_keeps_offline_interface(self):
+        with mock.patch.object(self.llm, "_chat", side_effect=RuntimeError("offline")):
+            result = self.llm.reflect(["中文"], [], 2, context=self.context)
+        self.assertTrue(result["stop"])
+        self.assertTrue(result["reason"])
+        self.assertEqual(result, HeuristicLLM().reflect(["中文"], [], 2))
 
 
 class TestGeminiChatTransport(unittest.TestCase):
