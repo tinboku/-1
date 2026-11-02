@@ -42,6 +42,7 @@ def _fake_ctx(tmp: Path):
     paper = _paper()
     paper.match = 92.0
     paper.match_reason = "directly on topic"
+    paper.match_source = "llm"
     paper.found_via = "search"
 
     def fake_run(question, criteria, answers=None, project="default",
@@ -122,6 +123,21 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(len(detail["papers"]), 1)
         self.assertEqual(detail["papers"][0]["key"], "Zhang25")
         self.assertEqual(detail["papers"][0]["match"], 92.0)
+        self.assertEqual(detail["papers"][0]["match_source"], "llm")
+        self.assertIsNone(detail["papers"][0]["match_fallback"])
+
+    def test_search_serializes_fallback_provenance(self):
+        store = self.ctx.store
+        sid = store.create_search("default", "q", ["q"], {})
+        paper = _paper()
+        paper.match = 45.0
+        paper.match_source = "heuristic"
+        paper.match_fallback = "invalid_score"
+        store.save_results(sid, [paper], set(), {"match_fallbacks": {"invalid_score": 1}}, None)
+        detail = self.client.get(f"/api/searches/{sid}", params={"included_only": False}).json()
+        self.assertEqual(detail["papers"][0]["match_source"], "heuristic")
+        self.assertEqual(detail["papers"][0]["match_fallback"], "invalid_score")
+        self.assertEqual(detail["counts"]["match_fallbacks"], {"invalid_score": 1})
 
     def test_search_events_stream(self):
         r = self.client.post("/api/searches", json={"question": "stream test"})

@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS search_results (
     paper_id INTEGER NOT NULL REFERENCES papers(id),
     match REAL,
     reason TEXT,
+    match_source TEXT,
+    match_fallback TEXT,
     included INTEGER NOT NULL DEFAULT 0,
     rank INTEGER,
     PRIMARY KEY (search_id, paper_id)
@@ -87,6 +89,9 @@ class Store:
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(search_results)")}
         if "provenance" not in cols:
             self.conn.execute("ALTER TABLE search_results ADD COLUMN provenance TEXT")
+        for column in ("match_source", "match_fallback"):
+            if column not in cols:
+                self.conn.execute(f"ALTER TABLE search_results ADD COLUMN {column} TEXT")
         self.conn.commit()
 
     # -- projects ---------------------------------------------------------
@@ -232,9 +237,9 @@ class Store:
             if is_included:
                 rank += 1
             self.conn.execute(
-                """INSERT OR REPLACE INTO search_results (search_id, paper_id, match, reason, included, rank, provenance)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (search_id, db_id, paper.match, paper.match_reason, 1 if is_included else 0, rank if is_included else None, paper.found_via),
+                """INSERT OR REPLACE INTO search_results (search_id, paper_id, match, reason, included, rank, provenance, match_source, match_fallback)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (search_id, db_id, paper.match, paper.match_reason, 1 if is_included else 0, rank if is_included else None, paper.found_via, paper.match_source, paper.match_fallback),
             )
         self.conn.execute(
             "UPDATE searches SET counts = ?, coverage = ? WHERE id = ?",
@@ -263,7 +268,8 @@ class Store:
 
     def search_papers(self, search_id: int, included_only: bool = True) -> list[Paper]:
         sql = """
-            SELECT p.*, sr.match AS sr_match, sr.reason AS sr_reason, sr.rank AS sr_rank, sr.provenance AS sr_provenance
+            SELECT p.*, sr.match AS sr_match, sr.reason AS sr_reason, sr.rank AS sr_rank, sr.provenance AS sr_provenance,
+                   sr.match_source AS sr_match_source, sr.match_fallback AS sr_match_fallback
             FROM search_results sr JOIN papers p ON p.id = sr.paper_id
             WHERE sr.search_id = ?
         """
@@ -275,6 +281,8 @@ class Store:
             p = self._row_to_paper(row)
             p.match = row["sr_match"]
             p.match_reason = row["sr_reason"]
+            p.match_source = row["sr_match_source"]
+            p.match_fallback = row["sr_match_fallback"]
             p.found_via = row["sr_provenance"]
             papers.append(p)
         return papers

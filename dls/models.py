@@ -27,6 +27,8 @@ class Paper:
     key: str | None = None        # citation key, e.g. "Zha25"
     match: float | None = None    # 0..100 relevance to a search's criteria
     match_reason: str | None = None
+    match_source: str | None = None
+    match_fallback: str | None = None
     found_via: str | None = None  # provenance: "search", "citations of [Key]", ...
 
     def __post_init__(self) -> None:

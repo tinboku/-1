@@ -21,16 +21,30 @@ endpoint never kills a search run.
 from __future__ import annotations
 
 import json
+import math
 import re
 import subprocess
 import sys
 import time
+from typing import NamedTuple
 
 import requests
 
 from .config import Config
 from .models import Paper
 from .scoring import content_tokens, heuristic_match
+
+
+class MatchScore(NamedTuple):
+    score: float
+    reason: str
+    source: str
+    fallback: str | None = None
+
+
+def _heuristic_score(criteria: list[str], paper: Paper, fallback: str | None = None) -> MatchScore:
+    score, reason = heuristic_match(criteria, paper)
+    return MatchScore(score, reason, "heuristic", fallback)
 
 
 # ---------------------------------------------------------------------------
@@ -66,8 +80,8 @@ class HeuristicLLM:
         return criteria
 
     # -- scoring ------------------------------------------------------------
-    def score_matches(self, criteria: list[str], papers: list[Paper]) -> list[tuple[float, str]]:
-        return [heuristic_match(criteria, p) for p in papers]
+    def score_matches(self, criteria: list[str], papers: list[Paper]) -> list[MatchScore]:
+        return [_heuristic_score(criteria, p) for p in papers]
 
     # -- reflection (adapting stage) -----------------------------------------
     def reflect(self, criteria: list[str], top_papers: list[Paper], round_no: int) -> dict:
@@ -283,8 +297,8 @@ class OpenAIChatLLM(HeuristicLLM):
             pass
         return super().make_criteria(question, answers)
 
-    def score_matches(self, criteria: list[str], papers: list[Paper]) -> list[tuple[float, str]]:
-        results: list[tuple[float, str]] = []
+    def score_matches(self, criteria: list[str], papers: list[Paper]) -> list[MatchScore]:
+        results: list[MatchScore] = []
         batch_size = 10
         for i in range(0, len(papers), batch_size):
             batch = papers[i : i + batch_size]
@@ -301,14 +315,39 @@ class OpenAIChatLLM(HeuristicLLM):
                     json_mode=True,
                 )
                 data = self._parse_json(out)
-                by_index: dict[int, tuple[float, str]] = {}
-                if isinstance(data, dict):
-                    for s in data.get("scores") or []:
-                        by_index[int(s["index"])] = (float(s["score"]), str(s.get("reason", "")))
-                for j, p in enumerate(batch):
-                    results.append(by_index.get(j) or heuristic_match(criteria, p))
+                if not isinstance(data, dict) or not isinstance(data.get("scores"), list):
+                    raise ValueError("Invalid score batch")
+                by_index: dict[int, dict] = {}
+                duplicates: set[int] = set()
+                for entry in data["scores"]:
+                    if not isinstance(entry, dict):
+                        continue
+                    index = entry.get("index")
+                    if type(index) is not int or not 0 <= index < len(batch):
+                        continue
+                    if index in by_index:
+                        duplicates.add(index)
+                    by_index[index] = entry
             except Exception:
-                results.extend(heuristic_match(criteria, p) for p in batch)
+                results.extend(_heuristic_score(criteria, p, "batch_error") for p in batch)
+                continue
+            for j, p in enumerate(batch):
+                entry = by_index.get(j)
+                if entry is None:
+                    results.append(_heuristic_score(criteria, p, "missing_index"))
+                    continue
+                if j in duplicates:
+                    results.append(_heuristic_score(criteria, p, "duplicate_index"))
+                    continue
+                score = entry.get("score")
+                try:
+                    valid = type(score) in (int, float) and math.isfinite(score) and 0 <= score <= 100
+                except (ValueError, OverflowError):
+                    valid = False
+                if not valid:
+                    results.append(_heuristic_score(criteria, p, "invalid_score"))
+                    continue
+                results.append(MatchScore(float(score), str(entry.get("reason", "")), "llm"))
         return results
 
     def reflect(self, criteria: list[str], top_papers: list[Paper], round_no: int) -> dict:

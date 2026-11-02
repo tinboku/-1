@@ -8,6 +8,7 @@ tests can all observe the run.
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Callable
 
 from .clients.openalex import OpenAlexClient
@@ -51,10 +52,20 @@ class DeepSearchEngine:
     # ------------------------------------------------------------------
     def _score(self, criteria: list[str], papers: list[Paper]) -> list[Paper]:
         scores = self.llm.score_matches(criteria, papers)
-        for paper, (score, reason) in zip(papers, scores):
-            paper.match = score
-            paper.match_reason = reason
+        for paper, result in zip(papers, scores):
+            paper.match = result.score
+            paper.match_reason = result.reason
+            paper.match_source = result.source
+            paper.match_fallback = result.fallback
         return papers
+
+    @staticmethod
+    def _record_match_fallbacks(papers: list[Paper], counts: dict, warnings: list[str]) -> None:
+        fallbacks = dict(Counter(p.match_fallback for p in papers if p.match_fallback))
+        counts["match_fallbacks"] = fallbacks
+        if fallbacks:
+            detail = ", ".join(f"{reason}: {count}" for reason, count in sorted(fallbacks.items()))
+            warnings.append(f"MATCH 评分降级：{sum(fallbacks.values())} 篇论文使用启发式评分（{detail}）。")
 
     def _snowball(self, seeds: list[Paper], limit_per_seed: int = 30) -> list[Paper]:
         out: list[Paper] = []
@@ -166,6 +177,7 @@ class DeepSearchEngine:
             "excluded": len(pool) - len(included),
             "candidates": len(pool),
         }
+        self._record_match_fallbacks(pool, counts, warnings)
         self.store.save_results(search_id, pool, included_db_ids, counts, None)
         progress("Done", f"{counts['found']} connected papers · {counts['excluded']} excluded")
         return SearchOutcome(
@@ -299,6 +311,7 @@ class DeepSearchEngine:
             "excluded": len(scored) - len(included),
             "candidates": len(scored),
         }
+        self._record_match_fallbacks(scored, counts, warnings)
         self.store.save_results(search_id, scored, included_db_ids, counts, coverage)
         # save_results upserts again internally for any paper missing db_id; keep ids consistent.
         progress("Done", f"{counts['found']} papers · {counts['with_full_text']} with full text · {counts['excluded']} excluded")
