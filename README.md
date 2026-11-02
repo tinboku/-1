@@ -34,5 +34,9 @@ an MVP built on public APIs.
 ## Status
 
 - 2026-11-02: project seeded. Behavior spec v0.1 written from public sources.
-  A live probe of Undermind's search flow is blocked by its signup wall
-  (no guest mode); completing it requires an account.
+- 2026-11-02 (later): **v0.2 measured edition** — logged in with a free
+  account and ran a complete real search (tabular dataset description
+  methods): 2 brainstorming questions → search criteria draft → ~6 min
+  deep search → 52 papers (36 with full text, 12 excluded) → cited report
+  file → chat-driven extraction table. See docs/behavior-spec.md.
+  Next: agree the MVP scope, then build the skeleton.
