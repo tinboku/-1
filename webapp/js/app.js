@@ -113,6 +113,13 @@ document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () 
 function scoreClass(m) { return m >= 80 ? "high" : m >= 55 ? "mid" : "low"; }
 
 // Run a job: stream progress into the log, return the final event.
+function searchWarnings(result) {
+  const stop = result?.stop_reason ? `<p class="muted">停止原因：${esc(result.stop_reason)}</p>` : "";
+  if (!result?.degraded && !result?.warnings?.length) return stop;
+  return stop + `<div role="alert" class="status-error"><strong>${result.degraded ? "⚠ 部分数据源失败，结果可能不完整，未收敛" : "⚠ 检索警告"}</strong>` +
+    `<ul>${(result.warnings || []).map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>`;
+}
+
 async function runJob(jobId, label) {
   if (state.jobs.has(jobId)) return state.jobs.get(jobId);
   switchTab("progress");
@@ -129,12 +136,12 @@ async function runJob(jobId, label) {
         row.innerHTML = `<span class="stage">${esc(ev.stage)}</span><span class="detail">${esc(ev.detail)}</span>`;
         events.appendChild(row);
       }, message => { connection.textContent = message; });
-      connection.textContent = final.type === 'done' ? '✓ 完成' : `失败：${final.error || '未知错误'}`;
-      connection.className = final.type === 'done' ? 'status-done' : 'status-error';
+      connection.textContent = final.type === 'done' ? (final.result?.degraded ? '⚠ 完成，结果不完整' : '✓ 完成') : `失败：${final.error || '未知错误'}`;
+      connection.className = final.type === 'done' && !final.result?.degraded ? 'status-done' : 'status-error';
       if (final.type === 'error') notify(final.error || '任务失败');
-      for (const warning of final.result?.warnings || []) {
-        const row = document.createElement('p'); row.className = 'warning'; row.textContent = warning; events.appendChild(row);
-      }
+      const diagnostics = document.createElement('div');
+      diagnostics.innerHTML = searchWarnings(final.result);
+      events.appendChild(diagnostics);
       if (final.result?.degraded) notify('本次任务处于降级状态，请查看进度与警告。');
       return final;
     } catch (err) { connection.textContent = err.message; connection.className = 'status-error'; throw err; }
@@ -264,7 +271,7 @@ async function openSearch(id) {
   if (view !== state.view) return;
   state.search = s;
   localStorage.setItem("dls-search", String(id));
-  $("search-warnings").innerHTML = (s.degraded ? '<p class="warning">降级检索：部分能力或数据源不可用。</p>' : '') + (s.warnings || []).map(w => `<p class="warning">${esc(w)}</p>`).join("");
+  $("search-warnings").innerHTML = searchWarnings(s);
   $("welcome").classList.add("hidden");
   $("library-view").classList.add("hidden");
   $("search-detail").classList.remove("hidden");

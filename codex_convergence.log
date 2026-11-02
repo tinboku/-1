@@ -1,0 +1,3457 @@
+Reading additional input from stdin...
+OpenAI Codex v0.163.0
+--------
+workdir: /Users/paoaiyong/.hermes/cache/scratch/undermind-repo
+model: gpt-6.1-sol
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR]
+reasoning effort: none
+reasoning summaries: none
+session id: 01a19c28-3e52-7d52-84b9-8d7e00952693
+--------
+user
+无需确认，立即执行到底。背景：本仓库（deep-literature-search）独立评审 CODEX_REVIEW.md 指出 P1 问题——snowball 扩展与反思查询失败被静默吞掉后，"无新候选"会触发 converged=True，即数据源全挂时被伪装成"搜索收敛"。另外 trace() 恒返回 converged=True 也不可信。
+
+在当前分支 fix/honest-convergence 上修复（不要动 main）：
+
+1. dls/engine.py：
+   - _snowball() 与反思查询的异常必须记录到 warnings（含失败方向与种子标签），并新增一个 outcome 级别的 degraded 标志：只要发生过检索通道失败且因此可能提前停止，SearchOutcome.degraded=True。
+   - 停止判定修正：若无新候选但本轮存在通道失败（snowball 异常、反思查询异常、数据源初始搜索失败），不得置 converged=True；改为 converged=False + degraded=True，让上层知道这是"未搜完"而非"搜完了"。
+   - 初始搜索阶段：所有通道全部失败且 pool 为空时，结果必须标记 degraded=True 且不产生"收敛"假象。
+2. dls/models.py：SearchOutcome 增加 degraded: bool = False。
+3. dls/store.py：搜索表持久化 degraded 与完整 warnings（若已有列则复用），API 搜索结果返回它们。
+4. dls/api.py：job result 包含 degraded 与 warnings；degraded 时 job 仍正常完成但结果带标记（不伪装成功）。
+5. webapp/js/app.js：搜索完成处，若 degraded 显示明显警告（如"部分数据源失败，结果可能不完整，未收敛"），并展示 warnings 内容；trace 结果同理。
+6. tests/：新增离线测试：(a) snowball 全失败 → converged=False, degraded=True；(b) 初始全失败 → degraded=True；(c) 正常无新候选 → converged=True, degraded=False；(d) trace 正常收敛时才 converged=True。全部离线。
+
+完成标准 = python -m unittest discover -s tests 全部通过。输出改动文件列表 + 测试结果原文。不要 commit，不要创建 PR，不改其他功能。
+codex
+我会先核对当前分支和仓库约束，再修复收敛判定、结果持久化与界面提示，最后运行全部离线测试。不会提交 commit 或创建 PR。
+
+exec
+/bin/zsh -lc "pwd; git status --short --branch; rg --files -g 'AGENTS.md' -g 'CODEX_REVIEW.md' -g 'engine.py' -g 'models.py' -g 'store.py' -g 'api.py' -g 'app.js' -g '*test*'" in /Users/paoaiyong/.hermes/cache/scratch/undermind-repo
+ succeeded in 0ms:
+/Users/paoaiyong/.hermes/cache/scratch/undermind-repo
+## fix/honest-convergence
+?? codex_convergence.log
+?? codex_impl.log
+?? codex_review.log
+tests/test_api.py
+tests/test_scoring.py
+tests/test_llm.py
+tests/test_engine.py
+tests/test_library.py
+webapp/js/app.js
+dls/engine.py
+dls/api.py
+dls/models.py
+dls/store.py
+
+exec
+/bin/zsh -lc "ls -la; rg --files -g AGENTS.md -g '*REVIEW*' /Users/paoaiyong/.hermes/cache/scratch 2>/dev/null; cat dls/engine.py" in /Users/paoaiyong/.hermes/cache/scratch/undermind-repo
+ succeeded in 0ms:
+total 1128
+drwxr-xr-x@ 13 paoaiyong  staff     416 Nov  2 21:07 .
+drwx------@ 10 paoaiyong  staff     320 Nov  2 20:49 ..
+drwxr-xr-x@ 15 paoaiyong  staff     480 Nov  2 21:07 .git
+-rw-r--r--@  1 paoaiyong  staff      26 Nov  2 20:49 .gitignore
+-rw-r--r--@  1 paoaiyong  staff    6117 Nov  2 20:49 README.md
+-rw-r--r--@  1 paoaiyong  staff    3119 Nov  2 21:07 codex_convergence.log
+-rw-r--r--@  1 paoaiyong  staff  162985 Nov  2 21:01 codex_impl.log
+-rw-r--r--@  1 paoaiyong  staff  328238 Nov  2 20:56 codex_review.log
+drwxr-xr-x@ 19 paoaiyong  staff     608 Nov  2 21:07 dls
+drwxr-xr-x@  5 paoaiyong  staff     160 Nov  2 20:49 docs
+-rw-r--r--@  1 paoaiyong  staff     624 Nov  2 20:49 pyproject.toml
+drwxr-xr-x@  9 paoaiyong  staff     288 Nov  2 21:07 tests
+drwxr-xr-x@  5 paoaiyong  staff     160 Nov  2 20:49 webapp
+/Users/paoaiyong/.hermes/cache/scratch/travel/docs/CODEX_UX_REVIEW.md
+/Users/paoaiyong/.hermes/cache/scratch/hc_review/hcresearch/AGENTS.md
+/Users/paoaiyong/.hermes/cache/scratch/travel/web/PHASE2_REVIEW.md
+/Users/paoaiyong/.hermes/cache/scratch/travel/web/SPIKE_REVIEW.md
+/Users/paoaiyong/.hermes/cache/scratch/travel/web/AGENTS.md
+/Users/paoaiyong/.hermes/cache/scratch/hc_review/hcresearch/research/REVIEW_claude_performance.md
+/Users/paoaiyong/.hermes/cache/scratch/hc_review/hcresearch/research/learning_to_profile/CODEX_REVIEW_PREFLIGHT_20261102.md
+/Users/paoaiyong/.hermes/cache/scratch/hc_review/hcresearch/research/REVIEW_codex_new_ideas.md
+/Users/paoaiyong/.hermes/cache/scratch/hc_review/hcresearch/research/REVIEW_codex_academic_map.md
+/Users/paoaiyong/.hermes/cache/scratch/hc_review/hcresearch/research/REVIEW_codex_prior_art_falsification.md
+/Users/paoaiyong/.hermes/cache/scratch/hc_review/hcresearch/research/REVIEW_codex_purpose_check.md
+"""The deep-search engine: orchestrates retrieval, scoring, snowballing.
+
+Stage names intentionally mirror the reference product's progress UI:
+Interpreting → Searching → Identifying → Reflecting → Adapting → Done.
+A `progress` callback receives (stage, detail) pairs so CLI, Web UI and
+tests can all observe the run.
+"""
+
+from __future__ import annotations
+
+from typing import Callable
+
+from .clients.openalex import OpenAlexClient
+from .clients.semantic_scholar import RateLimited, SemanticScholarClient
+from .llm import HeuristicLLM
+from .models import Paper, SearchOutcome
+from .scoring import dedupe, identity_keys
+from .store import Store
+
+ProgressFn = Callable[[str, str], None]
+
+
+def _noop(stage: str, detail: str) -> None:
+    pass
+
+
+class DeepSearchEngine:
+    def __init__(
+        self,
+        s2: SemanticScholarClient,
+        openalex: OpenAlexClient | None,
+        llm: HeuristicLLM,
+        store: Store,
+        include_threshold: float = 55.0,
+        crossref=None,
+    ):
+        self.s2 = s2
+        self.openalex = openalex
+        self.llm = llm
+        self.store = store
+        self.include_threshold = include_threshold
+        self.crossref = crossref
+
+    # ------------------------------------------------------------------
+    def brainstorm(self, question: str) -> list[str]:
+        return self.llm.brainstorm(question)
+
+    def build_criteria(self, question: str, answers: dict[str, str] | None = None) -> list[str]:
+        return self.llm.make_criteria(question, answers)
+
+    # ------------------------------------------------------------------
+    def _score(self, criteria: list[str], papers: list[Paper]) -> list[Paper]:
+        scores = self.llm.score_matches(criteria, papers)
+        for paper, (score, reason) in zip(papers, scores):
+            paper.match = score
+            paper.match_reason = reason
+        return papers
+
+    def _snowball(self, seeds: list[Paper], limit_per_seed: int = 30) -> list[Paper]:
+        out: list[Paper] = []
+        for seed in seeds:
+            label = f"[{seed.key}]" if seed.key else f"'{seed.title[:40]}'"
+            for fetcher, direction in ((self.s2.citations, "citations"), (self.s2.references, "references")):
+                try:
+                    found = fetcher(seed.paper_id, limit=limit_per_seed)
+                except Exception:
+                    continue
+                for p in found:
+                    if p.found_via is None:
+                        p.found_via = f"{direction} of {label}"
+                    out.append(p)
+        return out
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def estimate_coverage(
+        s2_relevant: set[str], oa_relevant: set[str], found_relevant: int
+    ) -> dict | None:
+        """Lincoln–Petersen / Chapman capture–recapture over two channels.
+
+        Treats Semantic Scholar and OpenAlex as two independent "captures"
+        of the same relevant-paper population. Only meaningful when both
+        channels returned relevant papers with some overlap.
+        """
+        n1, n2 = len(s2_relevant), len(oa_relevant)
+        m = len(s2_relevant & oa_relevant)
+        if n1 < 3 or n2 < 3 or m == 0:
+            return None
+        total_est = ((n1 + 1) * (n2 + 1) / (m + 1)) - 1
+        if total_est <= 0:
+            return None
+        coverage = max(0.0, min(1.0, found_relevant / total_est))
+        return {
+            "method": "capture-recapture (Chapman) over Semantic Scholar vs OpenAlex relevant sets",
+            "estimated_total_relevant": round(total_est, 1),
+            "found_relevant": found_relevant,
+            "estimated_coverage": round(coverage, 3),
+            "channel_sizes": {"semantic_scholar": n1, "openalex": n2, "overlap": m},
+        }
+
+    # ------------------------------------------------------------------
+    def trace(
+        self,
+        seed: Paper,
+        question: str | None = None,
+        project: str = "default",
+        hops: int = 1,
+        per_direction: int = 40,
+        progress: ProgressFn = _noop,
+    ) -> SearchOutcome:
+        """Citation-graph traversal from one seed paper ("相互查找").
+
+        Expands both directions — papers the seed cites (references) and
+        papers citing it (citations) — scores every neighbour against the
+        question (or the seed itself), and stores the neighbourhood as a
+        normal search so it can be reported, extracted and asked about.
+        """
+        warnings: list[str] = []
+        criteria = [question] if question else [seed.title, seed.abstract or seed.title]
+        label = f"Papers connected to: {seed.title}"
+        search_id = self.store.create_search(project, label, criteria, {})
+        seed.db_id = self.store.upsert_paper(seed)  # type: ignore[attr-defined]
+        progress("Tracing citation graph", f"seed [{seed.key}] {seed.title}")
+
+        seen_keys: set[str] = set(identity_keys(seed))
+        pool: list[Paper] = []
+        frontier = [seed]
+        for hop in range(1, hops + 1):
+            nxt: list[Paper] = []
+            for node in frontier:
+                node_label = f"[{node.key}]" if node.key else f"'{node.title[:40]}'"
+                for fetcher, direction in ((self.s2.citations, "citations"), (self.s2.references, "references")):
+                    try:
+                        found = fetcher(node.paper_id, limit=per_direction)
+                    except Exception:
+                        warnings.append(f"{direction} lookup failed for {node_label}.")
+                        continue
+                    for p in found:
+                        if identity_keys(p) & seen_keys:
+                            continue
+                        seen_keys |= identity_keys(p)
+                        if p.found_via is None:
+                            p.found_via = f"{direction} of {node_label}"
+                        pool.append(p)
+                        nxt.append(p)
+            if not nxt:
+                break
+            # Score this hop before deciding the next frontier.
+            hop_scored = self._score(criteria, nxt)
+            for p in hop_scored:
+                p.db_id = self.store.upsert_paper(p)  # type: ignore[attr-defined]
+            frontier = sorted(
+                (p for p in hop_scored if (p.match or 0) >= self.include_threshold),
+                key=lambda p: -(p.match or 0),
+            )[:5]
+            progress("Adapting and searching again", f"hop {hop}: {len(nxt)} neighbours")
+            if not frontier:
+                break
+
+        included = [p for p in pool if (p.match or 0) >= self.include_threshold]
+        included.sort(key=lambda p: -(p.match or 0))
+        included_db_ids = {getattr(p, "db_id") for p in included}
+        counts = {
+            "found": len(included),
+            "with_full_text": sum(1 for p in included if p.has_full_text),
+            "excluded": len(pool) - len(included),
+            "candidates": len(pool),
+        }
+        self.store.save_results(search_id, pool, included_db_ids, counts, None)
+        progress("Done", f"{counts['found']} connected papers · {counts['excluded']} excluded")
+        return SearchOutcome(
+            search_id=search_id,
+            question=label,
+            criteria=criteria,
+            included=included,
+            excluded_count=counts["excluded"],
+            with_full_text=counts["with_full_text"],
+            rounds=hops,
+            converged=True,
+            coverage=None,
+            warnings=warnings,
+        )
+
+    # ------------------------------------------------------------------
+    def run(
+        self,
+        question: str,
+        criteria: list[str],
+        answers: dict[str, str] | None = None,
+        project: str = "default",
+        per_query: int = 40,
+        max_rounds: int = 2,
+        seed_top: int = 8,
+        progress: ProgressFn = _noop,
+    ) -> SearchOutcome:
+        warnings: list[str] = []
+        search_id = self.store.create_search(project, question, criteria, answers or {})
+        progress("Interpreting your search criteria", f"{len(criteria)} criteria")
+
+        # -- Searching ---------------------------------------------------
+        progress("Searching for the most promising papers", "Semantic Scholar + OpenAlex")
+        pool: list[Paper] = []
+        queries = list(dict.fromkeys([question, *criteria]))
+        for q in queries:
+            try:
+                pool.extend(self.s2.search(q, limit=per_query))
+            except RateLimited:
+                warnings.append("Semantic Scholar rate-limited part of the initial search.")
+                continue
+            except Exception as exc:  # network etc.
+                warnings.append(f"Semantic Scholar search failed: {exc}")
+                continue
+        try:
+            if self.openalex is not None:
+                pool.extend(self.openalex.search(question, per_page=25))
+        except Exception:
+            warnings.append("OpenAlex channel unavailable; running single-source.")
+        if self.crossref is not None:
+            try:
+                pool.extend(self.crossref.search(question, rows=per_query))
+            except Exception:
+                warnings.append("Crossref channel unavailable.")
+
+        pool = dedupe(pool)
+        for p in pool:
+            if p.found_via is None:
+                p.found_via = "search"
+
+        # -- Identifying ---------------------------------------------------
+        progress("Identifying the best candidate papers", f"{len(pool)} candidates")
+        scored = self._score(criteria, pool)
+        included = [p for p in scored if (p.match or 0) >= self.include_threshold]
+        seen_keys: set[str] = set()
+        for p in scored:
+            seen_keys |= identity_keys(p)
+        # Persist early so included papers have citation KEYs; snowball
+        # provenance labels ("citations of [Key]") depend on them.
+        for p in scored:
+            p.db_id = self.store.upsert_paper(p)  # type: ignore[attr-defined]
+
+        # -- Reflecting / Adapting (snowball rounds) -------------------------
+        rounds_done = 0
+        converged = False
+        for round_no in range(1, max_rounds + 1):
+            rounds_done = round_no
+            progress("Reflecting on the results", f"round {round_no}")
+            reflection = self.llm.reflect(criteria, sorted(included, key=lambda p: -(p.match or 0)), round_no)
+            seeds = sorted(included, key=lambda p: -(p.match or 0))[:seed_top]
+            progress("Adapting and searching again", f"snowballing from {len(seeds)} seeds")
+            candidates = dedupe(self._snowball(seeds))
+            # The reflection step may propose fresh queries; run them too.
+            for new_q in reflection.get("new_queries") or []:
+                try:
+                    extra = self.s2.search(new_q, limit=20)
+                    for p in extra:
+                        if p.found_via is None:
+                            p.found_via = "reflection query"
+                    candidates = dedupe(candidates + extra)
+                except Exception:
+                    continue
+            candidates = [c for c in candidates if not (identity_keys(c) & seen_keys)]
+            for c in candidates:
+                seen_keys |= identity_keys(c)
+            if not candidates:
+                converged = True
+                break
+            new_scored = self._score(criteria, candidates)
+            for p in new_scored:
+                p.db_id = self.store.upsert_paper(p)  # type: ignore[attr-defined]
+            scored.extend(new_scored)
+            new_included = [p for p in new_scored if (p.match or 0) >= self.include_threshold]
+            included.extend(new_included)
+            gain = len(new_included) / max(1, len(included))
+            if reflection.get("stop") or gain < 0.03:
+                converged = True
+                break
+
+        included.sort(key=lambda p: -(p.match or 0))
+
+        # Persist papers and results; capture db ids for coverage sets.
+        s2_rel: set[str] = set()
+        oa_rel: set[str] = set()
+        included_db_ids: set[int] = set()
+        for p in scored:
+            db_id = self.store.upsert_paper(p)
+            p.db_id = db_id  # type: ignore[attr-defined]
+            if (p.match or 0) >= self.include_threshold:
+                if "semantic_scholar" in p.sources:
+                    s2_rel.add(p.paper_id)
+                if "openalex" in p.sources:
+                    oa_rel.add(p.paper_id)
+        for p in included:
+            included_db_ids.add(getattr(p, "db_id"))
+
+        coverage = self.estimate_coverage(s2_rel, oa_rel, len(included))
+        counts = {
+            "found": len(included),
+            "with_full_text": sum(1 for p in included if p.has_full_text),
+            "excluded": len(scored) - len(included),
+            "candidates": len(scored),
+        }
+        self.store.save_results(search_id, scored, included_db_ids, counts, coverage)
+        # save_results upserts again internally for any paper missing db_id; keep ids consistent.
+        progress("Done", f"{counts['found']} papers · {counts['with_full_text']} with full text · {counts['excluded']} excluded")
+
+        return SearchOutcome(
+            search_id=search_id,
+            question=question,
+            criteria=criteria,
+            included=included,
+            excluded_count=counts["excluded"],
+            with_full_text=counts["with_full_text"],
+            rounds=rounds_done,
+            converged=converged,
+            coverage=coverage,
+            warnings=warnings,
+        )
+
+exec
+/bin/zsh -lc 'cat dls/models.py dls/store.py' in /Users/paoaiyong/.hermes/cache/scratch/undermind-repo
+ succeeded in 0ms:
+"""Core data types shared across clients, the engine and the store."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+
+@dataclass
+class Paper:
+    paper_id: str  # canonical id: S2 id, "W..." OpenAlex id, or "doi:..."
+    title: str
+    abstract: str | None = None
+    year: int | None = None
+    authors: list[str] = field(default_factory=list)
+    venue: str | None = None
+    citation_count: int = 0
+    reference_count: int = 0
+    doi: str | None = None
+    arxiv_id: str | None = None
+    open_access_pdf: str | None = None
+    url: str | None = None
+    tldr: str | None = None
+    source: str = "semantic_scholar"
+    sources: list[str] = field(default_factory=list)  # every channel that found it
+
+    # Filled in by scoring / storage layers
+    key: str | None = None        # citation key, e.g. "Zha25"
+    match: float | None = None    # 0..100 relevance to a search's criteria
+    match_reason: str | None = None
+    found_via: str | None = None  # provenance: "search", "citations of [Key]", ...
+
+    def __post_init__(self) -> None:
+        if self.source and self.source not in self.sources:
+            self.sources.append(self.source)
+
+    @property
+    def has_full_text(self) -> bool:
+        return bool(self.open_access_pdf)
+
+    def citations_per_year(self, current_year: int = 2026) -> float:
+        if not self.year:
+            return float(self.citation_count)
+        age = max(1, current_year - self.year + 1)
+        return self.citation_count / age
+
+    def first_author_surname(self) -> str:
+        if not self.authors:
+            return "Anon"
+        name = self.authors[0].strip()
+        if not name:
+            return "Anon"
+        # "First Last" -> "Last"; keep only letters for a compact key.
+        last = name.split()[-1]
+        cleaned = "".join(ch for ch in last if ch.isalpha())
+        return cleaned or "Anon"
+
+
+@dataclass
+class SearchOutcome:
+    search_id: int
+    question: str
+    criteria: list[str]
+    included: list[Paper]
+    excluded_count: int
+    with_full_text: int
+    rounds: int
+    converged: bool
+    coverage: dict | None  # discovery-curve estimate, see engine.estimate_coverage
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def found(self) -> int:
+        return len(self.included)
+"""SQLite-backed project library: papers, searches, reports, updates."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import time
+from pathlib import Path
+
+from .models import Paper
+from .scoring import make_key
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS projects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL,
+    created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS papers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    paper_uid TEXT UNIQUE NOT NULL,
+    key TEXT UNIQUE,
+    title TEXT NOT NULL,
+    abstract TEXT,
+    year INTEGER,
+    authors TEXT NOT NULL DEFAULT '[]',
+    venue TEXT,
+    citation_count INTEGER NOT NULL DEFAULT 0,
+    reference_count INTEGER NOT NULL DEFAULT 0,
+    doi TEXT,
+    arxiv_id TEXT,
+    oa_pdf TEXT,
+    url TEXT,
+    tldr TEXT,
+    source TEXT,
+    starred INTEGER NOT NULL DEFAULT 0,
+    folder TEXT,
+    created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS searches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id),
+    question TEXT NOT NULL,
+    criteria TEXT NOT NULL DEFAULT '[]',
+    answers TEXT NOT NULL DEFAULT '{}',
+    counts TEXT NOT NULL DEFAULT '{}',
+    coverage TEXT,
+    created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS search_results (
+    search_id INTEGER NOT NULL REFERENCES searches(id),
+    paper_id INTEGER NOT NULL REFERENCES papers(id),
+    match REAL,
+    reason TEXT,
+    included INTEGER NOT NULL DEFAULT 0,
+    rank INTEGER,
+    PRIMARY KEY (search_id, paper_id)
+);
+CREATE TABLE IF NOT EXISTS files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id),
+    kind TEXT NOT NULL,
+    name TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS updates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    search_id INTEGER NOT NULL REFERENCES searches(id),
+    paper_id INTEGER NOT NULL REFERENCES papers(id),
+    found_at REAL NOT NULL,
+    seen INTEGER NOT NULL DEFAULT 0
+);
+"""
+
+
+class Store:
+    def __init__(self, db_path: Path):
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        # check_same_thread=False: the web UI serves requests from worker
+        # threads. SQLite itself serializes writers; our transactions are
+        # short, which is fine for this local single-user store.
+        self.conn = sqlite3.connect(str(db_path), check_same_thread=False, timeout=30)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript(SCHEMA)
+        # Migration: provenance column on search_results (added after v0.1).
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(search_results)")}
+        if "provenance" not in cols:
+            self.conn.execute("ALTER TABLE search_results ADD COLUMN provenance TEXT")
+        self.conn.commit()
+
+    # -- projects ---------------------------------------------------------
+    def project_id(self, name: str = "default") -> int:
+        row = self.conn.execute("SELECT id FROM projects WHERE name = ?", (name,)).fetchone()
+        if row:
+            return int(row["id"])
+        cur = self.conn.execute(
+            "INSERT INTO projects (name, created_at) VALUES (?, ?)", (name, time.time())
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    # -- papers -------------------------------------------------------------
+    def _taken_keys(self) -> set[str]:
+        return {r["key"] for r in self.conn.execute("SELECT key FROM papers WHERE key IS NOT NULL")}
+
+    def upsert_paper(self, paper: Paper) -> int:
+        """Insert or enrich a paper; assigns a citation KEY on first insert."""
+        row = self.conn.execute(
+            "SELECT id FROM papers WHERE paper_uid = ?", (paper.paper_id,)
+        ).fetchone()
+        if row is None and paper.doi:
+            row = self.conn.execute(
+                "SELECT id FROM papers WHERE doi = ?", (paper.doi,)
+            ).fetchone()
+        if row is not None:
+            pid = int(row["id"])
+            # Enrich missing fields only.
+            cur = self.conn.execute("SELECT * FROM papers WHERE id = ?", (pid,)).fetchone()
+            if not paper.key and cur["key"]:
+                paper.key = cur["key"]
+            updates: dict[str, object] = {}
+            if not cur["abstract"] and paper.abstract:
+                updates["abstract"] = paper.abstract
+            if not cur["oa_pdf"] and paper.open_access_pdf:
+                updates["oa_pdf"] = paper.open_access_pdf
+            if not cur["tldr"] and paper.tldr:
+                updates["tldr"] = paper.tldr
+            if paper.citation_count > (cur["citation_count"] or 0):
+                updates["citation_count"] = paper.citation_count
+            if updates:
+                sets = ", ".join(f"{k} = ?" for k in updates)
+                self.conn.execute(
+                    f"UPDATE papers SET {sets} WHERE id = ?", (*updates.values(), pid)
+                )
+                self.conn.commit()
+            return pid
+        if not paper.key:
+            paper.key = make_key(paper, self._taken_keys())
+        cur = self.conn.execute(
+            """INSERT INTO papers (paper_uid, key, title, abstract, year, authors, venue,
+               citation_count, reference_count, doi, arxiv_id, oa_pdf, url, tldr, source, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                paper.paper_id, paper.key, paper.title, paper.abstract, paper.year,
+                json.dumps(paper.authors), paper.venue, paper.citation_count,
+                paper.reference_count, paper.doi, paper.arxiv_id,
+                paper.open_access_pdf, paper.url, paper.tldr, paper.source, time.time(),
+            ),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def _row_to_paper(self, row: sqlite3.Row) -> Paper:
+        p = Paper(
+            paper_id=row["paper_uid"],
+            title=row["title"],
+            abstract=row["abstract"],
+            year=row["year"],
+            authors=json.loads(row["authors"] or "[]"),
+            venue=row["venue"],
+            citation_count=row["citation_count"] or 0,
+            reference_count=row["reference_count"] or 0,
+            doi=row["doi"],
+            arxiv_id=row["arxiv_id"],
+            open_access_pdf=row["oa_pdf"],
+            url=row["url"],
+            tldr=row["tldr"],
+            source=row["source"] or "import",
+        )
+        p.key = row["key"]
+        p.db_id = int(row["id"])  # type: ignore[attr-defined]
+        p.starred = bool(row["starred"])  # type: ignore[attr-defined]
+        p.folder = row["folder"]  # type: ignore[attr-defined]
+        return p
+
+    def get_paper(self, db_id: int) -> Paper | None:
+        row = self.conn.execute("SELECT * FROM papers WHERE id = ?", (db_id,)).fetchone()
+        return self._row_to_paper(row) if row else None
+
+    def find_paper(self, identifier: str) -> Paper | None:
+        """Look up by KEY, DOI, arXiv id, or canonical paper_uid."""
+        for column in ("key", "doi", "arxiv_id", "paper_uid"):
+            row = self.conn.execute(
+                f"SELECT * FROM papers WHERE {column} = ?", (identifier,)
+            ).fetchone()
+            if row:
+                return self._row_to_paper(row)
+        if identifier.startswith("doi:"):
+            return self.find_paper(identifier[4:])
+        return None
+
+    def list_papers(self, starred_only: bool = False, folder: str | None = None) -> list[Paper]:
+        sql = "SELECT * FROM papers"
+        clauses, args = [], []
+        if starred_only:
+            clauses.append("starred = 1")
+        if folder is not None:
+            clauses.append("folder = ?")
+            args.append(folder)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY year DESC, citation_count DESC"
+        return [self._row_to_paper(r) for r in self.conn.execute(sql, args)]
+
+    def set_star(self, db_id: int, starred: bool) -> None:
+        self.conn.execute("UPDATE papers SET starred = ? WHERE id = ?", (1 if starred else 0, db_id))
+        self.conn.commit()
+
+    def set_folder(self, db_id: int, folder: str | None) -> None:
+        self.conn.execute("UPDATE papers SET folder = ? WHERE id = ?", (folder, db_id))
+        self.conn.commit()
+
+    # -- searches -------------------------------------------------------------
+    def create_search(self, project: str, question: str, criteria: list[str], answers: dict) -> int:
+        pid = self.project_id(project)
+        cur = self.conn.execute(
+            "INSERT INTO searches (project_id, question, criteria, answers, created_at) VALUES (?, ?, ?, ?, ?)",
+            (pid, question, json.dumps(criteria), json.dumps(answers), time.time()),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def save_results(self, search_id: int, scored: list[Paper], included_ids: set[int], counts: dict, coverage: dict | None) -> None:
+        rank = 0
+        for paper in scored:
+            db_id = getattr(paper, "db_id", None)
+            if db_id is None:
+                db_id = self.upsert_paper(paper)
+                paper.db_id = db_id  # type: ignore[attr-defined]
+            is_included = db_id in included_ids
+            if is_included:
+                rank += 1
+            self.conn.execute(
+                """INSERT OR REPLACE INTO search_results (search_id, paper_id, match, reason, included, rank, provenance)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (search_id, db_id, paper.match, paper.match_reason, 1 if is_included else 0, rank if is_included else None, paper.found_via),
+            )
+        self.conn.execute(
+            "UPDATE searches SET counts = ?, coverage = ? WHERE id = ?",
+            (json.dumps(counts), json.dumps(coverage) if coverage else None, search_id),
+        )
+        self.conn.commit()
+
+    def get_search(self, search_id: int) -> dict | None:
+        row = self.conn.execute("SELECT * FROM searches WHERE id = ?", (search_id,)).fetchone()
+        if not row:
+            return None
+        return {
+            "id": int(row["id"]),
+            "project_id": int(row["project_id"]),
+            "question": row["question"],
+            "criteria": json.loads(row["criteria"] or "[]"),
+            "answers": json.loads(row["answers"] or "{}"),
+            "counts": json.loads(row["counts"] or "{}"),
+            "coverage": json.loads(row["coverage"]) if row["coverage"] else None,
+            "created_at": row["created_at"],
+        }
+
+    def list_searches(self) -> list[dict]:
+        ids = [int(r["id"]) for r in self.conn.execute("SELECT id FROM searches ORDER BY id DESC")]
+        return [self.get_search(i) for i in ids if self.get_search(i)]
+
+    def search_papers(self, search_id: int, included_only: bool = True) -> list[Paper]:
+        sql = """
+            SELECT p.*, sr.match AS sr_match, sr.reason AS sr_reason, sr.rank AS sr_rank, sr.provenance AS sr_provenance
+            FROM search_results sr JOIN papers p ON p.id = sr.paper_id
+            WHERE sr.search_id = ?
+        """
+        if included_only:
+            sql += " AND sr.included = 1"
+        sql += " ORDER BY sr.match DESC"
+        papers = []
+        for row in self.conn.execute(sql, (search_id,)):
+            p = self._row_to_paper(row)
+            p.match = row["sr_match"]
+            p.match_reason = row["sr_reason"]
+            p.found_via = row["sr_provenance"]
+            papers.append(p)
+        return papers
+
+    def search_paper_ids(self, search_id: int) -> set[int]:
+        return {
+            int(r["paper_id"])
+            for r in self.conn.execute("SELECT paper_id FROM search_results WHERE search_id = ?", (search_id,))
+        }
+
+    # -- files (reports) -------------------------------------------------------
+    def save_file(self, project: str, kind: str, name: str, content: str) -> int:
+        pid = self.project_id(project)
+        cur = self.conn.execute(
+            "INSERT INTO files (project_id, kind, name, content, created_at) VALUES (?, ?, ?, ?, ?)",
+            (pid, kind, name, content, time.time()),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def get_file(self, file_id: int) -> dict | None:
+        row = self.conn.execute("SELECT * FROM files WHERE id = ?", (file_id,)).fetchone()
+        if not row:
+            return None
+        return {"id": int(row["id"]), "kind": row["kind"], "name": row["name"], "content": row["content"]}
+
+    def list_files(self) -> list[dict]:
+        return [
+            {"id": int(r["id"]), "kind": r["kind"], "name": r["name"], "created_at": r["created_at"]}
+            for r in self.conn.execute("SELECT id, kind, name, created_at FROM files ORDER BY id DESC")
+        ]
+
+    # -- updates ------------------------------------------------------------------
+    def add_update(self, search_id: int, paper_db_id: int) -> None:
+        exists = self.conn.execute(
+            "SELECT 1 FROM updates WHERE search_id = ? AND paper_id = ?", (search_id, paper_db_id)
+        ).fetchone()
+        if not exists:
+            self.conn.execute(
+                "INSERT INTO updates (search_id, paper_id, found_at) VALUES (?, ?, ?)",
+                (search_id, paper_db_id, time.time()),
+            )
+            self.conn.commit()
+
+    def list_updates(self, search_id: int | None = None) -> list[dict]:
+        sql = """
+            SELECT u.id, u.search_id, u.found_at, u.seen, p.title, p.key, p.year
+            FROM updates u JOIN papers p ON p.id = u.paper_id
+        """
+        args: tuple = ()
+        if search_id is not None:
+            sql += " WHERE u.search_id = ?"
+            args = (search_id,)
+        sql += " ORDER BY u.found_at DESC"
+        return [dict(r) for r in self.conn.execute(sql, args)]
+
+exec
+/bin/zsh -lc "cat tests/test_engine.py tests/test_api.py; rg -n 'outcome|converged|warnings|result|trace|complete' dls/api.py webapp/js/app.js" in /Users/paoaiyong/.hermes/cache/scratch/undermind-repo
+ succeeded in 0ms:
+import tempfile
+import unittest
+from pathlib import Path
+
+from dls.engine import DeepSearchEngine
+from dls.llm import HeuristicLLM
+from dls.models import Paper
+from dls.store import Store
+
+CRITERIA = [
+    "natural-language descriptions of tabular datasets using large language "
+    "models, including data profiling and metadata generation for catalogs"
+]
+ABSTRACT = (
+    "We generate natural language descriptions of tabular datasets using large "
+    "language models, with data profiling and metadata generation for dataset "
+    "catalogs and discovery."
+)
+
+
+def mk(pid, title, abstract=ABSTRACT, year=2025, cites=30, doi=None, source="semantic_scholar", authors=None):
+    return Paper(
+        paper_id=pid, title=title, abstract=abstract, year=year,
+        authors=authors or ["Alice Zhang"], citation_count=cites, doi=doi, source=source,
+    )
+
+
+P1 = mk("s2-1", "AutoDDG: Automated Dataset Description Generation", doi="10.1/a")
+P2_S2 = mk("s2-2", "Polaris: Structured Dataset Descriptions", year=2026, cites=5, doi="10.1/b")
+P2_OA = mk("W2", "Polaris: Structured Dataset Descriptions", year=2026, cites=5, doi="10.1/b", source="openalex")
+P3 = mk(
+    "s2-3", "Quantum error correction with surface codes",
+    abstract="Fault tolerant quantum computation with surface codes and decoders.",
+    year=2024, cites=900,
+)
+P4 = mk("s2-4", "Dataset Metadata Generation for Catalogs", year=2023, cites=12, doi="10.1/d")
+P5 = mk("W5", "Metadata Generation for Dataset Discovery", year=2026, cites=3, source="openalex")
+P6 = mk("W6", "Tabular Dataset Descriptions with Language Models", year=2026, cites=2, source="openalex")
+
+
+class FakeS2:
+    def search(self, query, limit=50, offset=0, year=None):
+        return [P1, P2_S2, P3]
+
+    def citations(self, paper_id, limit=50):
+        return [P4] if paper_id == "s2-1" else []
+
+    def references(self, paper_id, limit=50):
+        return []
+
+
+class FakeOpenAlex:
+    def search(self, query, per_page=25):
+        return [P2_OA, P5, P6]
+
+
+class TestEngine(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(Path(self.tmp.name) / "test.db")
+        self.engine = DeepSearchEngine(FakeS2(), FakeOpenAlex(), HeuristicLLM(), self.store)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_full_run(self):
+        outcome = self.engine.run("dataset descriptions with LLMs", CRITERIA, per_query=10)
+        # Included: P1, P2 (merged), P5, P6 from search + P4 from snowballing. P3 excluded.
+        self.assertEqual(outcome.found, 5)
+        self.assertEqual(outcome.excluded_count, 1)
+        self.assertTrue(outcome.converged)
+        self.assertGreaterEqual(outcome.rounds, 1)
+        titles = [p.title for p in outcome.included]
+        self.assertTrue(any("AutoDDG" in t for t in titles))
+        self.assertTrue(any("Metadata Generation for Catalogs" in t for t in titles))
+        # Provenance: the snowballed paper records which seed it came from.
+        snowballed = [p for p in outcome.included if "Catalogs" in p.title][0]
+        self.assertEqual(snowballed.found_via, "citations of [Zhang25]")
+        stored_snow = [p for p in self.store.search_papers(outcome.search_id) if "Catalogs" in p.title][0]
+        self.assertEqual(stored_snow.found_via, "citations of [Zhang25]")
+        for p in outcome.included:
+            self.assertIsNotNone(p.key)
+            self.assertGreaterEqual(p.match, 55)
+        # Coverage: S2 relevant {P1,P2,P4}=3, OA relevant {P2,P5,P6}=3, overlap {P2}=1
+        self.assertIsNotNone(outcome.coverage)
+        self.assertAlmostEqual(outcome.coverage["estimated_total_relevant"], 7.0)
+        self.assertAlmostEqual(outcome.coverage["estimated_coverage"], 5 / 7, places=3)
+        # Persisted
+        stored = self.store.search_papers(outcome.search_id, included_only=True)
+        self.assertEqual(len(stored), 5)
+        search = self.store.get_search(outcome.search_id)
+        self.assertEqual(search["counts"]["found"], 5)
+
+
+class FakeS2Clone:
+    """Returns the seed paper again under a different id (cross-source clone)."""
+
+    def search(self, query, limit=50, offset=0, year=None):
+        return [P1]
+
+    def citations(self, paper_id, limit=50):
+        clone = mk("doi:10.1/a", P1.title, year=2025, cites=30, doi="10.1/a", source="crossref")
+        return [clone]
+
+    def references(self, paper_id, limit=50):
+        return []
+
+
+class TestCrossSourceDedup(unittest.TestCase):
+    def test_clone_not_double_counted(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = Store(Path(td) / "t.db")
+            engine = DeepSearchEngine(FakeS2Clone(), None, HeuristicLLM(), store)
+            outcome = engine.run("dataset descriptions with LLMs", CRITERIA, per_query=10)
+            self.assertEqual(outcome.found, 1)
+            self.assertEqual(outcome.included[0].title, P1.title)
+
+
+class TestTrace(unittest.TestCase):
+    def test_trace_from_seed(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = Store(Path(td) / "t.db")
+            engine = DeepSearchEngine(FakeS2(), None, HeuristicLLM(), store)
+            seed = mk("s2-1", "AutoDDG: Automated Dataset Description Generation", doi="10.1/a")
+            outcome = engine.trace(seed, question=CRITERIA[0])
+            # FakeS2.citations(s2-1) -> [P4]; references -> [].
+            self.assertEqual(outcome.found, 1)
+            self.assertEqual(outcome.included[0].title, P4.title)
+            self.assertEqual(outcome.included[0].found_via, "citations of [Zhang25]")
+
+
+if __name__ == "__main__":
+    unittest.main()
+"""Offline tests for the HTTP API layer (dls.api).
+
+Uses a fake engine/LLM context so no network or API key is needed.
+Skipped automatically when fastapi is not installed (it is an optional
+extra); run with the project venv:  .venv/bin/python -m unittest tests.test_api
+"""
+
+from __future__ import annotations
+
+import tempfile
+import time
+import types
+import unittest
+from pathlib import Path
+
+try:
+    from fastapi.testclient import TestClient
+except ImportError:  # pragma: no cover
+    raise unittest.SkipTest("fastapi not installed (pip install -e .[api])")
+
+from dls.api import create_app
+from dls.models import Paper, SearchOutcome
+from dls.store import Store
+
+
+def _paper() -> Paper:
+    p = Paper(
+        paper_id="s2:abc",
+        title="AutoDDG: Automated Dataset Description Generation",
+        abstract="We generate descriptions of tabular datasets.",
+        year=2025,
+        authors=["Wei Zhang"],
+        venue="ACM TODS",
+        citation_count=12,
+        doi="10.1145/3786626",
+    )
+    return p
+
+
+def _fake_ctx(tmp: Path):
+    store = Store(tmp / "library.db")
+    paper = _paper()
+    paper.match = 92.0
+    paper.match_reason = "directly on topic"
+    paper.found_via = "search"
+
+    def fake_run(question, criteria, answers=None, project="default",
+                 per_query=40, max_rounds=2, progress=None):
+        sid = store.create_search(project, question, criteria, answers or {})
+        if progress:
+            progress("Searching for the most promising papers", "fake channel")
+            progress("Identifying the best candidate papers", "1 candidates")
+        db_id = store.upsert_paper(paper)
+        paper.db_id = db_id
+        store.save_results(sid, [paper], {db_id}, {"found": 1, "excluded": 0}, None)
+        if progress:
+            progress("Done", "1 papers")
+        return SearchOutcome(
+            search_id=sid, question=question, criteria=criteria, included=[paper],
+            excluded_count=0, with_full_text=0, rounds=1, converged=True,
+            coverage=None, warnings=[],
+        )
+
+    engine = types.SimpleNamespace(
+        brainstorm=lambda q: ["Scope?", "Methods only?"],
+        build_criteria=lambda q, answers=None: [q, "narrow scope"],
+        run=fake_run,
+        trace=None,
+    )
+    llm = types.SimpleNamespace(answer=lambda q, papers: f"answer over {len(papers)} papers")
+    config = types.SimpleNamespace(
+        llm_model="test-model",
+        db_path=tmp / "library.db",
+        files_dir=tmp / "files",
+        ensure_dirs=lambda: (tmp / "files").mkdir(parents=True, exist_ok=True),
+    )
+    return types.SimpleNamespace(
+        config=config, store=store, engine=engine, llm=llm, s2=None, crossref=None
+    )
+
+
+def _wait_job(client: TestClient, job_id: str, timeout: float = 10.0) -> dict:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        snap = client.get(f"/api/jobs/{job_id}").json()
+        if snap["status"] in ("done", "error"):
+            return snap
+        time.sleep(0.05)
+    raise AssertionError("job did not finish in time")
+
+
+class ApiTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.ctx = _fake_ctx(self.tmp)
+        self.client = TestClient(create_app(self.ctx))
+
+    def test_health(self):
+        r = self.client.get("/api/health")
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["ok"])
+
+    def test_plan(self):
+        r = self.client.post("/api/plan", json={"question": "dataset descriptions with LLMs"})
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(len(body["questions"]), 2)
+        self.assertEqual(len(body["criteria"]), 2)
+
+    def test_search_job_flow(self):
+        r = self.client.post("/api/searches", json={"question": "dataset descriptions"})
+        self.assertEqual(r.status_code, 202)
+        snap = _wait_job(self.client, r.json()["job_id"])
+        self.assertEqual(snap["status"], "done", snap)
+        self.assertEqual(snap["result"]["found"], 1)
+        stages = [e["stage"] for e in snap["events"]]
+        self.assertIn("Searching for the most promising papers", stages)
+
+        search_id = snap["result"]["search_id"]
+        detail = self.client.get(f"/api/searches/{search_id}").json()
+        self.assertEqual(detail["question"], "dataset descriptions")
+        self.assertEqual(len(detail["papers"]), 1)
+        self.assertEqual(detail["papers"][0]["key"], "Zhang25")
+        self.assertEqual(detail["papers"][0]["match"], 92.0)
+
+    def test_search_events_stream(self):
+        r = self.client.post("/api/searches", json={"question": "stream test"})
+        job_id = r.json()["job_id"]
+        _wait_job(self.client, job_id)
+        with self.client.stream("GET", f"/api/jobs/{job_id}/events") as stream:
+            text = "".join(chunk for chunk in stream.iter_text())
+        self.assertIn('"type": "progress"', text)
+        self.assertIn('"type": "done"', text)
+
+    def test_ask_and_export_and_star(self):
+        r = self.client.post("/api/searches", json={"question": "q"})
+        snap = _wait_job(self.client, r.json()["job_id"])
+        search_id = snap["result"]["search_id"]
+
+        ans = self.client.post(f"/api/searches/{search_id}/ask", json={"question": "which?"})
+        self.assertEqual(ans.json()["answer"], "answer over 1 papers")
+
+        exp = self.client.get(f"/api/searches/{search_id}/export", params={"format": "bibtex"})
+        self.assertEqual(exp.status_code, 200)
+        self.assertIn("Zhang25", exp.text)
+
+        papers = self.client.get("/api/papers").json()
+        self.assertEqual(len(papers), 1)
+        db_id = papers[0]["db_id"]
+        star = self.client.post(f"/api/papers/{db_id}/star", json={"starred": True})
+        self.assertEqual(star.json()["starred"], True)
+        starred = self.client.get("/api/papers", params={"starred": True}).json()
+        self.assertEqual(len(starred), 1)
+
+    def test_unknown_job_404(self):
+        self.assertEqual(self.client.get("/api/jobs/nope").status_code, 404)
+        self.assertEqual(self.client.get("/api/searches/999").status_code, 404)
+
+
+if __name__ == "__main__":
+    unittest.main()
+webapp/js/app.js:2:// Layout: searches/files (left) · results table (center) ·
+webapp/js/app.js:242:    const f = await api.getFile(final.result.file_id);
+webapp/js/app.js:263:    const f = await api.getFile(final.result.file_id);
+webapp/js/app.js:274:    const fresh = final.result.new_papers || [];
+webapp/js/app.js:308:/* dialogs: new search / trace / import                                */
+webapp/js/app.js:342:  if (final.type === "done" && final.result?.search_id) openSearch(final.result.search_id);
+webapp/js/app.js:345:const dlgTrace = $("dlg-trace");
+webapp/js/app.js:346:$("btn-new-trace").addEventListener("click", () => dlgTrace.showModal());
+webapp/js/app.js:355:  if (final.type === "done" && final.result?.search_id) openSearch(final.result.search_id);
+dls/api.py:5:- **Jobs**: searches, traces, reports, extractions and update checks run
+dls/api.py:57:    result: dict | None = None
+dls/api.py:66:    def finish(self, status: str, result: dict | None = None, error: str | None = None) -> None:
+dls/api.py:69:            self.result = result
+dls/api.py:82:            "result": self.result,
+dls/api.py:101:                result = fn(job)
+dls/api.py:102:                job.finish("done", result=result)
+dls/api.py:204:    """Same resolution order as the CLI's `trace` command."""
+dls/api.py:222:        results = ctx.s2.search(identifier, limit=1)
+dls/api.py:223:        return results[0] if results else None
+dls/api.py:295:                outcome = ctx.engine.run(
+dls/api.py:305:                "search_id": outcome.search_id,
+dls/api.py:306:                "found": outcome.found,
+dls/api.py:307:                "excluded": outcome.excluded_count,
+dls/api.py:308:                "with_full_text": outcome.with_full_text,
+dls/api.py:309:                "rounds": outcome.rounds,
+dls/api.py:310:                "converged": outcome.converged,
+dls/api.py:311:                "coverage": outcome.coverage,
+dls/api.py:312:                "warnings": outcome.warnings,
+dls/api.py:318:    @app.post("/api/trace", status_code=202)
+dls/api.py:319:    def launch_trace(body: TraceIn) -> dict:
+dls/api.py:326:                outcome = ctx.engine.trace(
+dls/api.py:330:                "search_id": outcome.search_id,
+dls/api.py:331:                "found": outcome.found,
+dls/api.py:332:                "excluded": outcome.excluded_count,
+dls/api.py:333:                "warnings": outcome.warnings,
+dls/api.py:336:        job = jobs.submit("trace", work)
+dls/api.py:517:                    final = {"type": job.status, "result": job.result, "error": job.error}
+
+exec
+/bin/zsh -lc "sed -n '1,150p' webapp/js/app.js; sed -n '280,375p' webapp/js/app.js; sed -n '275,370p' dls/api.py; rg -n 'warning|toast|banner' webapp" in /Users/paoaiyong/.hermes/cache/scratch/undermind-repo
+ exited 1 in 0ms:
+// Deep Literature Search — web workbench.
+// Layout: searches/files (left) · results table (center) ·
+// progress / report / table / ask tabs (right). Talks to dls/api.py.
+
+import { api, watchJob } from "./api.js";
+
+/* ------------------------------------------------------------------ */
+/* tiny markdown renderer (escape first, then a safe subset)           */
+/* ------------------------------------------------------------------ */
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+function inline(s) {
+  return esc(s)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(?<![*\w])\*([^*\n]+)\*/g, "<em>$1</em>")
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/\[([A-Z][A-Za-zÀ-ÿ'-]*\d{2}[a-z]?)\]/g, '<span class="cite">[$1]</span>');
+}
+
+export function renderMarkdown(md) {
+  const lines = String(md ?? "").split("\n");
+  const out = [];
+  let i = 0;
+  let listOpen = false;
+  const closeList = () => { if (listOpen) { out.push("</ul>"); listOpen = false; } };
+  while (i < lines.length) {
+    const line = lines[i];
+    // table block
+    if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
+      closeList();
+      const cells = (l) => l.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+      const head = cells(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) { rows.push(cells(lines[i])); i++; }
+      out.push("<table><thead><tr>" + head.map((h) => `<th>${inline(h)}</th>`).join("") + "</tr></thead><tbody>");
+      for (const r of rows) out.push("<tr>" + r.map((c) => `<td>${inline(c)}</td>`).join("") + "</tr>");
+      out.push("</tbody></table>");
+      continue;
+    }
+    const h = line.match(/^(#{1,4})\s+(.*)$/);
+    if (h) { closeList(); out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`); i++; continue; }
+    const li = line.match(/^\s*[-*]\s+(.*)$/);
+    if (li) { if (!listOpen) { out.push("<ul>"); listOpen = true; } out.push(`<li>${inline(li[1])}</li>`); i++; continue; }
+    closeList();
+    if (line.trim() === "") { i++; continue; }
+    if (/^\s*(-{3,}|_{3,})\s*$/.test(line)) { out.push("<hr>"); i++; continue; }
+    out.push(`<p>${inline(line)}</p>`);
+    i++;
+  }
+  closeList();
+  return out.join("\n");
+}
+
+/* ------------------------------------------------------------------ */
+/* state + element helpers                                             */
+/* ------------------------------------------------------------------ */
+const $ = (id) => document.getElementById(id);
+const state = { searchId: null, search: null, tab: "progress" };
+
+function switchTab(name) {
+  state.tab = name;
+  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
+  for (const page of ["progress", "report", "table", "ask"]) {
+    $("tab-" + page).classList.toggle("hidden", page !== name);
+  }
+}
+document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.dataset.tab)));
+
+function scoreClass(m) { return m >= 80 ? "high" : m >= 55 ? "mid" : "low"; }
+
+function logJobEvent(jobLabel) {
+  const head = document.createElement("div");
+  head.className = "job-head";
+  head.textContent = jobLabel + " ";
+  $("job-log").appendChild(head);
+  return (ev) => {
+    const row = document.createElement("div");
+    row.className = "ev";
+    row.innerHTML = `<span class="stage">${esc(ev.stage)}</span><span class="detail">${esc(ev.detail)}</span>`;
+    $("job-log").appendChild(row);
+    $("tab-progress").scrollTop = $("tab-progress").scrollHeight;
+    return head;
+  };
+}
+
+// Run a job: stream progress into the log, return the final event.
+async function runJob(jobId, label) {
+  switchTab("progress");
+  if ($("job-log").querySelector(".muted")) $("job-log").innerHTML = "";
+  const render = logJobEvent(label);
+  let headEl = null;
+  const final = await watchJob(jobId, (ev) => { headEl = render(ev) || headEl; });
+  const status = document.createElement("span");
+  status.className = final.type === "done" ? "status-done" : "status-error";
+  status.textContent = final.type === "done" ? "✓ 完成" : `✗ ${final.error || "失败"}`;
+  (headEl || $("job-log")).appendChild(status);
+  return final;
+}
+
+/* ------------------------------------------------------------------ */
+/* searches list + detail                                              */
+/* ------------------------------------------------------------------ */
+async function refreshSearches() {
+  const searches = await api.listSearches();
+  const list = $("search-list");
+  list.innerHTML = searches.length ? "" : '<p class="muted">还没有检索记录。</p>';
+  for (const s of searches) {
+    const div = document.createElement("div");
+    div.className = "search-item" + (s.id === state.searchId ? " active" : "");
+    const found = s.counts?.found ?? "?";
+    const date = s.created_at ? new Date(s.created_at * 1000).toLocaleDateString() : "";
+    div.innerHTML = `<div class="q">${esc(s.question)}</div><div class="m">#${s.id} · ${found} 篇入选 · ${esc(date)}</div>`;
+    div.addEventListener("click", () => openSearch(s.id));
+    list.appendChild(div);
+  }
+}
+
+async function refreshFiles() {
+  const files = await api.listFiles();
+  const list = $("file-list");
+  list.innerHTML = files.length ? "" : '<p class="muted">还没有文件。</p>';
+  for (const f of files) {
+    const div = document.createElement("div");
+    div.className = "file-item";
+    div.innerHTML = `<span class="kind">${esc(f.kind)}</span>${esc(f.name)}`;
+    div.addEventListener("click", () => openFile(f));
+    list.appendChild(div);
+  }
+}
+
+async function openFile(meta) {
+  const f = await api.getFile(meta.id);
+  if (f.kind === "table") {
+    $("table-view").innerHTML = renderMarkdown(f.content);
+    $("extract-bar").classList.remove("hidden");
+    switchTab("table");
+  } else {
+    $("report-view").innerHTML = renderMarkdown(f.content);
+    switchTab("report");
+  }
+}
+
+function paperRow(p, mode) {
+  const tr = document.createElement("tr");
+  b.addEventListener("click", () => {
+    if (!needSearch()) return;
+    window.open(api.exportUrl(state.searchId, b.dataset.export), "_blank");
+  })
+);
+
+async function sendAsk() {
+  if (!needSearch()) return;
+  const q = $("ask-input").value.trim();
+  if (!q) return;
+  $("ask-input").value = "";
+  const log = $("ask-log");
+  if (log.querySelector(".muted")) log.innerHTML = "";
+  const u = document.createElement("div");
+  u.className = "ask-msg user"; u.textContent = q; log.appendChild(u);
+  const b = document.createElement("div");
+  b.className = "ask-msg bot"; b.textContent = "思考中…"; log.appendChild(b);
+  try {
+    const { answer } = await api.ask(state.searchId, q);
+    b.innerHTML = renderMarkdown(answer);
+  } catch (e) {
+    b.textContent = "出错：" + e.message;
+  }
+}
+$("btn-ask").addEventListener("click", sendAsk);
+$("ask-input").addEventListener("keydown", (e) => { if (e.key === "Enter") sendAsk(); });
+
+/* ------------------------------------------------------------------ */
+/* dialogs: new search / trace / import                                */
+/* ------------------------------------------------------------------ */
+const dlgSearch = $("dlg-search");
+$("btn-new-search").addEventListener("click", () => { dlgSearch.showModal(); });
+
+$("ns-plan").addEventListener("click", async () => {
+  const question = $("ns-question").value.trim();
+  if (!question) { alert("先写研究问题。"); return; }
+  const btn = $("ns-plan");
+  btn.disabled = true; btn.textContent = "生成中…";
+  try {
+    const { questions, criteria } = await api.plan(question, {});
+    $("ns-questions").innerHTML = questions.map((q) => `
+      <div class="ns-q"><div class="qtext">${esc(q)}</div>
+      <input type="text" data-q="${esc(q)}" placeholder="你的回答（可留空）"></div>`).join("");
+    $("ns-criteria").value = criteria.join("\n");
+    $("ns-plan-area").classList.remove("hidden");
+    btn.textContent = "按回答重新生成标准";
+  } finally { btn.disabled = false; }
+});
+
+$("ns-launch").addEventListener("click", async () => {
+  const question = $("ns-question").value.trim();
+  if (!question) { alert("先写研究问题。"); return; }
+  const answers = {};
+  document.querySelectorAll("#ns-questions input").forEach((inp) => {
+    if (inp.value.trim()) answers[inp.dataset.q] = inp.value.trim();
+  });
+  const criteriaText = $("ns-criteria").value.trim();
+  const criteria = criteriaText ? criteriaText.split("\n").map((x) => x.trim()).filter(Boolean) : null;
+  dlgSearch.close();
+  const { job_id } = await api.launchSearch({ question, criteria, answers });
+  const final = await runJob(job_id, "深度检索");
+  await refreshSearches();
+  if (final.type === "done" && final.result?.search_id) openSearch(final.result.search_id);
+});
+
+const dlgTrace = $("dlg-trace");
+$("btn-new-trace").addEventListener("click", () => dlgTrace.showModal());
+$("tr-launch").addEventListener("click", async () => {
+  const identifier = $("tr-seed").value.trim();
+  if (!identifier) { alert("先填种子论文。"); return; }
+  const question = $("tr-question").value.trim() || null;
+  dlgTrace.close();
+  const { job_id } = await api.launchTrace({ identifier, question, hops: 1 });
+  const final = await runJob(job_id, "引用图谱扩展");
+  await refreshSearches();
+  if (final.type === "done" && final.result?.search_id) openSearch(final.result.search_id);
+});
+
+const dlgDoi = $("dlg-doi");
+$("btn-import-doi").addEventListener("click", () => dlgDoi.showModal());
+$("doi-launch").addEventListener("click", async () => {
+  const doi = $("doi-input").value.trim();
+  if (!doi) return;
+  dlgDoi.close();
+  try {
+    const p = await api.importDoi(doi);
+    alert(`已导入 [${p.key}] ${p.title}`);
+  } catch (e) {
+    alert("导入失败：" + e.message);
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* boot                                                                */
+/* ------------------------------------------------------------------ */
+(async function boot() {
+
+    @app.get("/api/searches/{search_id}")
+    def get_search(search_id: int, included_only: bool = True) -> dict:
+        with locked():
+            search = ctx.store.get_search(search_id)
+            if search is None:
+                raise HTTPException(404, "search not found")
+            papers = ctx.store.search_papers(search_id, included_only=included_only)
+        search["papers"] = [paper_dict(p) for p in papers]
+        return search
+
+    @app.post("/api/searches", status_code=202)
+    def launch_search(body: SearchIn) -> dict:
+        def work(job: Job) -> dict:
+            criteria = body.criteria
+            if not criteria:
+                with locked():
+                    criteria = ctx.engine.build_criteria(body.question, body.answers or None)
+            job.emit("Interpreting your search criteria", f"{len(criteria)} criteria")
+            with locked():
+                outcome = ctx.engine.run(
+                    body.question,
+                    criteria,
+                    answers=body.answers,
+                    project=body.project,
+                    per_query=body.per_query,
+                    max_rounds=body.rounds,
+                    progress=job.emit,
+                )
+            return {
+                "search_id": outcome.search_id,
+                "found": outcome.found,
+                "excluded": outcome.excluded_count,
+                "with_full_text": outcome.with_full_text,
+                "rounds": outcome.rounds,
+                "converged": outcome.converged,
+                "coverage": outcome.coverage,
+                "warnings": outcome.warnings,
+            }
+
+        job = jobs.submit("search", work)
+        return {"job_id": job.id}
+
+    @app.post("/api/trace", status_code=202)
+    def launch_trace(body: TraceIn) -> dict:
+        def work(job: Job) -> dict:
+            with locked():
+                seed = _resolve_seed(ctx, body.identifier)
+            if seed is None:
+                raise ValueError(f"could not resolve seed paper: {body.identifier}")
+            with locked():
+                outcome = ctx.engine.trace(
+                    seed, question=body.question, hops=body.hops, progress=job.emit
+                )
+            return {
+                "search_id": outcome.search_id,
+                "found": outcome.found,
+                "excluded": outcome.excluded_count,
+                "warnings": outcome.warnings,
+            }
+
+        job = jobs.submit("trace", work)
+        return {"job_id": job.id}
+
+    # -- per-search actions ----------------------------------------------------
+    @app.post("/api/searches/{search_id}/report", status_code=202)
+    def launch_report(search_id: int, body: ReportIn) -> dict:
+        from .report import generate_report
+
+        def work(job: Job) -> dict:
+            job.emit("Writing report", f"search #{search_id}")
+            with locked():
+                file_id, _md = generate_report(ctx.store, search_id, ctx.llm, focus=body.focus)
+            return {"file_id": file_id}
+
+        job = jobs.submit("report", work)
+        return {"job_id": job.id}
+
+    @app.post("/api/searches/{search_id}/extract", status_code=202)
+    def launch_extract(search_id: int, body: ExtractIn) -> dict:
+        from .extract import extract_table
+
+        columns = [c.strip() for c in body.columns if c.strip()]
+        if not columns:
+            raise HTTPException(422, "at least one column is required")
+
+        def work(job: Job) -> dict:
+            job.emit("Extracting table", ", ".join(columns))
+            with locked():
+                table = extract_table(ctx.store, search_id, columns, ctx.llm, top_n=body.top)
+                file_id = ctx.store.save_file(
+                    "default", "table", f"extract-search-{search_id}", table
+                )
+            return {"file_id": file_id}
+
+        job = jobs.submit("extract", work)
+
+exec
+/bin/zsh -lc 'for p in /AGENTS.md /Users/AGENTS.md /Users/paoaiyong/AGENTS.md /Users/paoaiyong/.hermes/AGENTS.md /Users/paoaiyong/.hermes/cache/AGENTS.md /Users/paoaiyong/.hermes/cache/scratch/AGENTS.md; do if [ -f "$p" ]; then cat "$p"; fi; done; rg -n '"'def reflect|new_queries|stop' dls/llm.py; command -v python; cat pyproject.toml" in /Users/paoaiyong/.hermes/cache/scratch/undermind-repo
+ succeeded in 0ms:
+73:    def reflect(self, criteria: list[str], top_papers: list[Paper], round_no: int) -> dict:
+80:        new_queries = []
+82:            new_queries.append(" ".join(fresh[:6]))
+83:        return {"new_queries": new_queries, "stop": round_no >= 2}
+314:    def reflect(self, criteria: list[str], top_papers: list[Paper], round_no: int) -> dict:
+322:                    '{"new_queries": ["..."], "stop": false}',
+329:                    "new_queries": [str(q) for q in data.get("new_queries") or []][:2],
+330:                    "stop": bool(data.get("stop")),
+/Users/paoaiyong/.hermes/installs/88d29d1df47a658d/environments/0267a5db45764b189882ac2eee6202d4/venv/bin/python
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deep-literature-search"
+version = "0.1.0"
+description = "Undermind-style deep literature search agent: iterative search over Semantic Scholar / OpenAlex, citation snowballing, per-paper match scoring, and cited reports."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+api = ["fastapi>=0.110", "uvicorn>=0.29", "httpx>=0.27"]
+
+[project.scripts]
+dls = "dls.cli:main"
+
+[tool.setuptools]
+packages = ["dls", "dls.clients"]
+
+codex
+已确认当前分支是 `fix/honest-convergence`。代码中 snowball 和反思查询异常确实会被吞掉，trace 也固定返回已收敛。我会保留本次运行发生过的检索失败记录，并据此标记 `degraded=True`、阻止宣称收敛；trace 仅在相关前沿正常耗尽时判定收敛，达到跳数上限则不算。
+
+apply patch
+patch: completed
+/Users/paoaiyong/.hermes/cache/scratch/undermind-repo/dls/api.py
+/Users/paoaiyong/.hermes/cache/scratch/undermind-repo/dls/engine.py
+/Users/paoaiyong/.hermes/cache/scratch/undermind-repo/dls/models.py
+/Users/paoaiyong/.hermes/cache/scratch/undermind-repo/dls/store.py
+diff --git a/dls/api.py b/dls/api.py
+index 1da49b5f487e632aba479d47563cccfb680ce241..27a045d98fef1212ee58bfbf555f4d82e46b6650
+--- a/dls/api.py
++++ b/dls/api.py
+@@ -308,6 +308,7 @@
+                 "with_full_text": outcome.with_full_text,
+                 "rounds": outcome.rounds,
+                 "converged": outcome.converged,
++                "degraded": outcome.degraded,
+                 "coverage": outcome.coverage,
+                 "warnings": outcome.warnings,
+             }
+@@ -330,6 +331,8 @@
+                 "search_id": outcome.search_id,
+                 "found": outcome.found,
+                 "excluded": outcome.excluded_count,
++                "converged": outcome.converged,
++                "degraded": outcome.degraded,
+                 "warnings": outcome.warnings,
+             }
+ 
+diff --git a/dls/engine.py b/dls/engine.py
+index a8c90f5d4356d7796b294d72378106e8f8cd29d8..860302bf9c87469fceaf554d129a4f36bc87796a
+--- a/dls/engine.py
++++ b/dls/engine.py
+@@ -56,14 +56,15 @@
+             paper.match_reason = reason
+         return papers
+ 
+-    def _snowball(self, seeds: list[Paper], limit_per_seed: int = 30) -> list[Paper]:
++    def _snowball(self, seeds: list[Paper], warnings: list[str], limit_per_seed: int = 30) -> list[Paper]:
+         out: list[Paper] = []
+         for seed in seeds:
+             label = f"[{seed.key}]" if seed.key else f"'{seed.title[:40]}'"
+             for fetcher, direction in ((self.s2.citations, "citations"), (self.s2.references, "references")):
+                 try:
+                     found = fetcher(seed.paper_id, limit=limit_per_seed)
+-                except Exception:
++                except Exception as exc:
++                    warnings.append(f"{direction} lookup failed for {label}: {exc}")
+                     continue
+                 for p in found:
+                     if p.found_via is None:
+@@ -125,15 +126,18 @@
+         seen_keys: set[str] = set(identity_keys(seed))
+         pool: list[Paper] = []
+         frontier = [seed]
++        converged = False
++        rounds_done = 0
+         for hop in range(1, hops + 1):
++            rounds_done = hop
+             nxt: list[Paper] = []
+             for node in frontier:
+                 node_label = f"[{node.key}]" if node.key else f"'{node.title[:40]}'"
+                 for fetcher, direction in ((self.s2.citations, "citations"), (self.s2.references, "references")):
+                     try:
+                         found = fetcher(node.paper_id, limit=per_direction)
+-                    except Exception:
+-                        warnings.append(f"{direction} lookup failed for {node_label}.")
++                    except Exception as exc:
++                        warnings.append(f"{direction} lookup failed for {node_label}: {exc}")
+                         continue
+                     for p in found:
+                         if identity_keys(p) & seen_keys:
+@@ -144,6 +148,7 @@
+                         pool.append(p)
+                         nxt.append(p)
+             if not nxt:
++                converged = not warnings
+                 break
+             # Score this hop before deciding the next frontier.
+             hop_scored = self._score(criteria, nxt)
+@@ -155,6 +160,7 @@
+             )[:5]
+             progress("Adapting and searching again", f"hop {hop}: {len(nxt)} neighbours")
+             if not frontier:
++                converged = not warnings
+                 break
+ 
+         included = [p for p in pool if (p.match or 0) >= self.include_threshold]
+@@ -166,7 +172,8 @@
+             "excluded": len(pool) - len(included),
+             "candidates": len(pool),
+         }
+-        self.store.save_results(search_id, pool, included_db_ids, counts, None)
++        self.store.save_results(search_id, pool, included_db_ids, counts, None,
++                                degraded=bool(warnings), warnings=warnings, converged=converged)
+         progress("Done", f"{counts['found']} connected papers · {counts['excluded']} excluded")
+         return SearchOutcome(
+             search_id=search_id,
+@@ -175,10 +182,11 @@
+             included=included,
+             excluded_count=counts["excluded"],
+             with_full_text=counts["with_full_text"],
+-            rounds=hops,
+-            converged=True,
++            rounds=rounds_done,
++            converged=converged,
+             coverage=None,
+             warnings=warnings,
++            degraded=bool(warnings),
+         )
+ 
+     # ------------------------------------------------------------------
+@@ -205,21 +213,21 @@
+             try:
+                 pool.extend(self.s2.search(q, limit=per_query))
+             except RateLimited:
+-                warnings.append("Semantic Scholar rate-limited part of the initial search.")
++                warnings.append(f"Semantic Scholar initial search rate-limited for query {q!r}.")
+                 continue
+             except Exception as exc:  # network etc.
+-                warnings.append(f"Semantic Scholar search failed: {exc}")
++                warnings.append(f"Semantic Scholar initial search failed for query {q!r}: {exc}")
+                 continue
+         try:
+             if self.openalex is not None:
+                 pool.extend(self.openalex.search(question, per_page=25))
+-        except Exception:
+-            warnings.append("OpenAlex channel unavailable; running single-source.")
++        except Exception as exc:
++            warnings.append(f"OpenAlex initial search failed for query {question!r}: {exc}")
+         if self.crossref is not None:
+             try:
+                 pool.extend(self.crossref.search(question, rows=per_query))
+-            except Exception:
+-                warnings.append("Crossref channel unavailable.")
++            except Exception as exc:
++                warnings.append(f"Crossref initial search failed for query {question!r}: {exc}")
+ 
+         pool = dedupe(pool)
+         for p in pool:
+@@ -247,7 +255,7 @@
+             reflection = self.llm.reflect(criteria, sorted(included, key=lambda p: -(p.match or 0)), round_no)
+             seeds = sorted(included, key=lambda p: -(p.match or 0))[:seed_top]
+             progress("Adapting and searching again", f"snowballing from {len(seeds)} seeds")
+-            candidates = dedupe(self._snowball(seeds))
++            candidates = dedupe(self._snowball(seeds, warnings))
+             # The reflection step may propose fresh queries; run them too.
+             for new_q in reflection.get("new_queries") or []:
+                 try:
+@@ -256,13 +264,14 @@
+                         if p.found_via is None:
+                             p.found_via = "reflection query"
+                     candidates = dedupe(candidates + extra)
+-                except Exception:
+-                    continue
++                except Exception as exc:
++                    seed_labels = ", ".join(f"[{p.key}]" if p.key else repr(p.title[:40]) for p in seeds) or "no seeds"
++                    warnings.append(f"reflection query search failed for {new_q!r} (seeds: {seed_labels}): {exc}")
+             candidates = [c for c in candidates if not (identity_keys(c) & seen_keys)]
+             for c in candidates:
+                 seen_keys |= identity_keys(c)
+             if not candidates:
+-                converged = True
++                converged = not warnings
+                 break
+             new_scored = self._score(criteria, candidates)
+             for p in new_scored:
+@@ -272,7 +281,7 @@
+             included.extend(new_included)
+             gain = len(new_included) / max(1, len(included))
+             if reflection.get("stop") or gain < 0.03:
+-                converged = True
++                converged = not warnings
+                 break
+ 
+         included.sort(key=lambda p: -(p.match or 0))
+@@ -299,7 +308,8 @@
+             "excluded": len(scored) - len(included),
+             "candidates": len(scored),
+         }
+-        self.store.save_results(search_id, scored, included_db_ids, counts, coverage)
++        self.store.save_results(search_id, scored, included_db_ids, counts, coverage,
++                                degraded=bool(warnings), warnings=warnings, converged=converged)
+         # save_results upserts again internally for any paper missing db_id; keep ids consistent.
+         progress("Done", f"{counts['found']} papers · {counts['with_full_text']} with full text · {counts['excluded']} excluded")
+ 
+@@ -314,4 +324,5 @@
+             converged=converged,
+             coverage=coverage,
+             warnings=warnings,
++            degraded=bool(warnings),
+         )
+diff --git a/dls/models.py b/dls/models.py
+index 3e3591bc0a6332418857ec910334ea5655d5e570..2116374c4d2039943a2bb98ec492597ff1104c78
+--- a/dls/models.py
++++ b/dls/models.py
+@@ -67,6 +67,7 @@
+     converged: bool
+     coverage: dict | None  # discovery-curve estimate, see engine.estimate_coverage
+     warnings: list[str] = field(default_factory=list)
++    degraded: bool = False
+ 
+     @property
+     def found(self) -> int:
+diff --git a/dls/store.py b/dls/store.py
+index 41dccf24e29ad61873324d551a7ab20d5d938d31..a4470ae67fd94096aeeb60ccdc5a729cad862e4b
+--- a/dls/store.py
++++ b/dls/store.py
+@@ -87,6 +87,14 @@
+         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(search_results)")}
+         if "provenance" not in cols:
+             self.conn.execute("ALTER TABLE search_results ADD COLUMN provenance TEXT")
++        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(searches)")}
++        for name, definition in (
++            ("degraded", "INTEGER NOT NULL DEFAULT 0"),
++            ("warnings", "TEXT NOT NULL DEFAULT '[]'"),
++            ("converged", "INTEGER NOT NULL DEFAULT 0"),
++        ):
++            if name not in cols:
++                self.conn.execute(f"ALTER TABLE searches ADD COLUMN {name} {definition}")
+         self.conn.commit()
+ 
+     # -- projects ---------------------------------------------------------
+@@ -221,7 +229,8 @@
+         self.conn.commit()
+         return int(cur.lastrowid)
+ 
+-    def save_results(self, search_id: int, scored: list[Paper], included_ids: set[int], counts: dict, coverage: dict | None) -> None:
++    def save_results(self, search_id: int, scored: list[Paper], included_ids: set[int], counts: dict, coverage: dict | None,
++                     *, degraded: bool = False, warnings: list[str] | None = None, converged: bool = False) -> None:
+         rank = 0
+         for paper in scored:
+             db_id = getattr(paper, "db_id", None)
+@@ -237,8 +246,9 @@
+                 (search_id, db_id, paper.match, paper.match_reason, 1 if is_included else 0, rank if is_included else None, paper.found_via),
+             )
+         self.conn.execute(
+-            "UPDATE searches SET counts = ?, coverage = ? WHERE id = ?",
+-            (json.dumps(counts), json.dumps(coverage) if coverage else None, search_id),
++            "UPDATE searches SET counts = ?, coverage = ?, degraded = ?, warnings = ?, converged = ? WHERE id = ?",
++            (json.dumps(counts), json.dumps(coverage) if coverage else None,
++             int(degraded), json.dumps(warnings or []), int(converged), search_id),
+         )
+         self.conn.commit()
+ 
+@@ -254,6 +264,9 @@
+             "answers": json.loads(row["answers"] or "{}"),
+             "counts": json.loads(row["counts"] or "{}"),
+             "coverage": json.loads(row["coverage"]) if row["coverage"] else None,
++            "degraded": bool(row["degraded"]),
++            "warnings": json.loads(row["warnings"] or "[]"),
++            "converged": bool(row["converged"]),
+             "created_at": row["created_at"],
+         }
+ 
+
+exec
+/bin/zsh -lc "sed -n '180,220p' webapp/js/app.js; rg -n '_snowball' . --glob '*.py'" in /Users/paoaiyong/.hermes/cache/scratch/undermind-repo
+ succeeded in 0ms:
+    const abs = document.createElement("tr");
+    abs.className = "abstract-row";
+    abs.innerHTML = `<td colspan="4">${esc(p.tldr || p.abstract || "（无摘要）")}</td>`;
+    tr.after(abs);
+  });
+  return tr;
+}
+
+async function openSearch(id) {
+  state.searchId = id;
+  const s = await api.getSearch(id);
+  state.search = s;
+  $("welcome").classList.add("hidden");
+  $("library-view").classList.add("hidden");
+  $("search-detail").classList.remove("hidden");
+  $("detail-question").textContent = s.question;
+  const c = s.counts || {};
+  const cov = s.coverage
+    ? ` · 覆盖估计 ≈${Math.round((s.coverage.estimated_coverage || 0) * 100)}%（约 ${s.coverage.estimated_total_relevant} 篇相关）`
+    : "";
+  $("detail-meta").innerHTML =
+    `<span>入选 ${c.found ?? s.papers.length} 篇</span><span>全文 ${c.with_full_text ?? 0}</span>` +
+    `<span>排除 ${c.excluded ?? 0}</span><span>候选 ${c.candidates ?? "?"}</span><span>${cov}</span>`;
+  $("detail-criteria").innerHTML = (s.criteria || []).map((x) => `<span class="chip">${esc(x)}</span>`).join("");
+  const body = $("papers-body");
+  body.innerHTML = "";
+  for (const p of s.papers) body.appendChild(paperRow(p, "search"));
+  $("papers-empty").classList.toggle("hidden", s.papers.length > 0);
+  $("ask-log").innerHTML = '<p class="muted">基于当前检索的入选论文提问，例如：哪些用了表格画像？</p>';
+  await refreshSearches();
+}
+
+/* ------------------------------------------------------------------ */
+/* library view                                                        */
+/* ------------------------------------------------------------------ */
+async function openLibrary() {
+  $("welcome").classList.add("hidden");
+  $("search-detail").classList.add("hidden");
+  $("library-view").classList.remove("hidden");
+  const papers = await api.listPapers($("chk-starred").checked);
+  $("library-count").textContent = `${papers.length} 篇`;
+./dls/engine.py:59:    def _snowball(self, seeds: list[Paper], warnings: list[str], limit_per_seed: int = 30) -> list[Paper]:
+./dls/engine.py:258:            candidates = dedupe(self._snowball(seeds, warnings))
+
+apply patch
+patch: completed
+/Users/paoaiyong/.hermes/cache/scratch/undermind-repo/webapp/js/app.js
+diff --git a/dls/api.py b/dls/api.py
+index 1da49b5f487e632aba479d47563cccfb680ce241..27a045d98fef1212ee58bfbf555f4d82e46b6650
+--- a/dls/api.py
++++ b/dls/api.py
+@@ -308,6 +308,7 @@
+                 "with_full_text": outcome.with_full_text,
+                 "rounds": outcome.rounds,
+                 "converged": outcome.converged,
++                "degraded": outcome.degraded,
+                 "coverage": outcome.coverage,
+                 "warnings": outcome.warnings,
+             }
+@@ -330,6 +331,8 @@
+                 "search_id": outcome.search_id,
+                 "found": outcome.found,
+                 "excluded": outcome.excluded_count,
++                "converged": outcome.converged,
++                "degraded": outcome.degraded,
+                 "warnings": outcome.warnings,
+             }
+ 
+diff --git a/dls/engine.py b/dls/engine.py
+index a8c90f5d4356d7796b294d72378106e8f8cd29d8..860302bf9c87469fceaf554d129a4f36bc87796a
+--- a/dls/engine.py
++++ b/dls/engine.py
+@@ -56,14 +56,15 @@
+             paper.match_reason = reason
+         return papers
+ 
+-    def _snowball(self, seeds: list[Paper], limit_per_seed: int = 30) -> list[Paper]:
++    def _snowball(self, seeds: list[Paper], warnings: list[str], limit_per_seed: int = 30) -> list[Paper]:
+         out: list[Paper] = []
+         for seed in seeds:
+             label = f"[{seed.key}]" if seed.key else f"'{seed.title[:40]}'"
+             for fetcher, direction in ((self.s2.citations, "citations"), (self.s2.references, "references")):
+                 try:
+                     found = fetcher(seed.paper_id, limit=limit_per_seed)
+-                except Exception:
++                except Exception as exc:
++                    warnings.append(f"{direction} lookup failed for {label}: {exc}")
+                     continue
+                 for p in found:
+                     if p.found_via is None:
+@@ -125,15 +126,18 @@
+         seen_keys: set[str] = set(identity_keys(seed))
+         pool: list[Paper] = []
+         frontier = [seed]
++        converged = False
++        rounds_done = 0
+         for hop in range(1, hops + 1):
++            rounds_done = hop
+             nxt: list[Paper] = []
+             for node in frontier:
+                 node_label = f"[{node.key}]" if node.key else f"'{node.title[:40]}'"
+                 for fetcher, direction in ((self.s2.citations, "citations"), (self.s2.references, "references")):
+                     try:
+                         found = fetcher(node.paper_id, limit=per_direction)
+-                    except Exception:
+-                        warnings.append(f"{direction} lookup failed for {node_label}.")
++                    except Exception as exc:
++                        warnings.append(f"{direction} lookup failed for {node_label}: {exc}")
+                         continue
+                     for p in found:
+                         if identity_keys(p) & seen_keys:
+@@ -144,6 +148,7 @@
+                         pool.append(p)
+                         nxt.append(p)
+             if not nxt:
++                converged = not warnings
+                 break
+             # Score this hop before deciding the next frontier.
+             hop_scored = self._score(criteria, nxt)
+@@ -155,6 +160,7 @@
+             )[:5]
+             progress("Adapting and searching again", f"hop {hop}: {len(nxt)} neighbours")
+             if not frontier:
++                converged = not warnings
+                 break
+ 
+         included = [p for p in pool if (p.match or 0) >= self.include_threshold]
+@@ -166,7 +172,8 @@
+             "excluded": len(pool) - len(included),
+             "candidates": len(pool),
+         }
+-        self.store.save_results(search_id, pool, included_db_ids, counts, None)
++        self.store.save_results(search_id, pool, included_db_ids, counts, None,
++                                degraded=bool(warnings), warnings=warnings, converged=converged)
+         progress("Done", f"{counts['found']} connected papers · {counts['excluded']} excluded")
+         return SearchOutcome(
+             search_id=search_id,
+@@ -175,10 +182,11 @@
+             included=included,
+             excluded_count=counts["excluded"],
+             with_full_text=counts["with_full_text"],
+-            rounds=hops,
+-            converged=True,
++            rounds=rounds_done,
++            converged=converged,
+             coverage=None,
+             warnings=warnings,
++            degraded=bool(warnings),
+         )
+ 
+     # ------------------------------------------------------------------
+@@ -205,21 +213,21 @@
+             try:
+                 pool.extend(self.s2.search(q, limit=per_query))
+             except RateLimited:
+-                warnings.append("Semantic Scholar rate-limited part of the initial search.")
++                warnings.append(f"Semantic Scholar initial search rate-limited for query {q!r}.")
+                 continue
+             except Exception as exc:  # network etc.
+-                warnings.append(f"Semantic Scholar search failed: {exc}")
++                warnings.append(f"Semantic Scholar initial search failed for query {q!r}: {exc}")
+                 continue
+         try:
+             if self.openalex is not None:
+                 pool.extend(self.openalex.search(question, per_page=25))
+-        except Exception:
+-            warnings.append("OpenAlex channel unavailable; running single-source.")
++        except Exception as exc:
++            warnings.append(f"OpenAlex initial search failed for query {question!r}: {exc}")
+         if self.crossref is not None:
+             try:
+                 pool.extend(self.crossref.search(question, rows=per_query))
+-            except Exception:
+-                warnings.append("Crossref channel unavailable.")
++            except Exception as exc:
++                warnings.append(f"Crossref initial search failed for query {question!r}: {exc}")
+ 
+         pool = dedupe(pool)
+         for p in pool:
+@@ -247,7 +255,7 @@
+             reflection = self.llm.reflect(criteria, sorted(included, key=lambda p: -(p.match or 0)), round_no)
+             seeds = sorted(included, key=lambda p: -(p.match or 0))[:seed_top]
+             progress("Adapting and searching again", f"snowballing from {len(seeds)} seeds")
+-            candidates = dedupe(self._snowball(seeds))
++            candidates = dedupe(self._snowball(seeds, warnings))
+             # The reflection step may propose fresh queries; run them too.
+             for new_q in reflection.get("new_queries") or []:
+                 try:
+@@ -256,13 +264,14 @@
+                         if p.found_via is None:
+                             p.found_via = "reflection query"
+                     candidates = dedupe(candidates + extra)
+-                except Exception:
+-                    continue
++                except Exception as exc:
++                    seed_labels = ", ".join(f"[{p.key}]" if p.key else repr(p.title[:40]) for p in seeds) or "no seeds"
++                    warnings.append(f"reflection query search failed for {new_q!r} (seeds: {seed_labels}): {exc}")
+             candidates = [c for c in candidates if not (identity_keys(c) & seen_keys)]
+             for c in candidates:
+                 seen_keys |= identity_keys(c)
+             if not candidates:
+-                converged = True
++                converged = not warnings
+                 break
+             new_scored = self._score(criteria, candidates)
+             for p in new_scored:
+@@ -272,7 +281,7 @@
+             included.extend(new_included)
+             gain = len(new_included) / max(1, len(included))
+             if reflection.get("stop") or gain < 0.03:
+-                converged = True
++                converged = not warnings
+                 break
+ 
+         included.sort(key=lambda p: -(p.match or 0))
+@@ -299,7 +308,8 @@
+             "excluded": len(scored) - len(included),
+             "candidates": len(scored),
+         }
+-        self.store.save_results(search_id, scored, included_db_ids, counts, coverage)
++        self.store.save_results(search_id, scored, included_db_ids, counts, coverage,
++                                degraded=bool(warnings), warnings=warnings, converged=converged)
+         # save_results upserts again internally for any paper missing db_id; keep ids consistent.
+         progress("Done", f"{counts['found']} papers · {counts['with_full_text']} with full text · {counts['excluded']} excluded")
+ 
+@@ -314,4 +324,5 @@
+             converged=converged,
+             coverage=coverage,
+             warnings=warnings,
++            degraded=bool(warnings),
+         )
+diff --git a/dls/models.py b/dls/models.py
+index 3e3591bc0a6332418857ec910334ea5655d5e570..2116374c4d2039943a2bb98ec492597ff1104c78
+--- a/dls/models.py
++++ b/dls/models.py
+@@ -67,6 +67,7 @@
+     converged: bool
+     coverage: dict | None  # discovery-curve estimate, see engine.estimate_coverage
+     warnings: list[str] = field(default_factory=list)
++    degraded: bool = False
+ 
+     @property
+     def found(self) -> int:
+diff --git a/dls/store.py b/dls/store.py
+index 41dccf24e29ad61873324d551a7ab20d5d938d31..a4470ae67fd94096aeeb60ccdc5a729cad862e4b
+--- a/dls/store.py
++++ b/dls/store.py
+@@ -87,6 +87,14 @@
+         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(search_results)")}
+         if "provenance" not in cols:
+             self.conn.execute("ALTER TABLE search_results ADD COLUMN provenance TEXT")
++        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(searches)")}
++        for name, definition in (
++            ("degraded", "INTEGER NOT NULL DEFAULT 0"),
++            ("warnings", "TEXT NOT NULL DEFAULT '[]'"),
++            ("converged", "INTEGER NOT NULL DEFAULT 0"),
++        ):
++            if name not in cols:
++                self.conn.execute(f"ALTER TABLE searches ADD COLUMN {name} {definition}")
+         self.conn.commit()
+ 
+     # -- projects ---------------------------------------------------------
+@@ -221,7 +229,8 @@
+         self.conn.commit()
+         return int(cur.lastrowid)
+ 
+-    def save_results(self, search_id: int, scored: list[Paper], included_ids: set[int], counts: dict, coverage: dict | None) -> None:
++    def save_results(self, search_id: int, scored: list[Paper], included_ids: set[int], counts: dict, coverage: dict | None,
++                     *, degraded: bool = False, warnings: list[str] | None = None, converged: bool = False) -> None:
+         rank = 0
+         for paper in scored:
+             db_id = getattr(paper, "db_id", None)
+@@ -237,8 +246,9 @@
+                 (search_id, db_id, paper.match, paper.match_reason, 1 if is_included else 0, rank if is_included else None, paper.found_via),
+             )
+         self.conn.execute(
+-            "UPDATE searches SET counts = ?, coverage = ? WHERE id = ?",
+-            (json.dumps(counts), json.dumps(coverage) if coverage else None, search_id),
++            "UPDATE searches SET counts = ?, coverage = ?, degraded = ?, warnings = ?, converged = ? WHERE id = ?",
++            (json.dumps(counts), json.dumps(coverage) if coverage else None,
++             int(degraded), json.dumps(warnings or []), int(converged), search_id),
+         )
+         self.conn.commit()
+ 
+@@ -254,6 +264,9 @@
+             "answers": json.loads(row["answers"] or "{}"),
+             "counts": json.loads(row["counts"] or "{}"),
+             "coverage": json.loads(row["coverage"]) if row["coverage"] else None,
++            "degraded": bool(row["degraded"]),
++            "warnings": json.loads(row["warnings"] or "[]"),
++            "converged": bool(row["converged"]),
+             "created_at": row["created_at"],
+         }
+ 
+diff --git a/webapp/js/app.js b/webapp/js/app.js
+index 182cbf0b950bcc542498e8972a394a9f25a46608..f3e5554086780879f8fda4642d4348c23f77b985
+--- a/webapp/js/app.js
++++ b/webapp/js/app.js
+@@ -90,6 +90,12 @@
+ }
+ 
+ // Run a job: stream progress into the log, return the final event.
++function searchWarnings(result) {
++  if (!result?.degraded && !result?.warnings?.length) return "";
++  return `<div role="alert" class="status-error"><strong>${result.degraded ? "⚠ 部分数据源失败，结果可能不完整，未收敛" : "⚠ 检索警告"}</strong>` +
++    `<ul>${(result.warnings || []).map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>`;
++}
++
+ async function runJob(jobId, label) {
+   switchTab("progress");
+   if ($("job-log").querySelector(".muted")) $("job-log").innerHTML = "";
+@@ -97,9 +103,10 @@
+   let headEl = null;
+   const final = await watchJob(jobId, (ev) => { headEl = render(ev) || headEl; });
+   const status = document.createElement("span");
+-  status.className = final.type === "done" ? "status-done" : "status-error";
+-  status.textContent = final.type === "done" ? "✓ 完成" : `✗ ${final.error || "失败"}`;
++  status.className = final.type === "done" && !final.result?.degraded ? "status-done" : "status-error";
++  status.textContent = final.type === "done" ? (final.result?.degraded ? "⚠ 完成，结果不完整" : "✓ 完成") : `✗ ${final.error || "失败"}`;
+   (headEl || $("job-log")).appendChild(status);
++  $("job-log").insertAdjacentHTML("beforeend", searchWarnings(final.result));
+   return final;
+ }
+ 
+@@ -201,6 +208,7 @@
+     `<span>入选 ${c.found ?? s.papers.length} 篇</span><span>全文 ${c.with_full_text ?? 0}</span>` +
+     `<span>排除 ${c.excluded ?? 0}</span><span>候选 ${c.candidates ?? "?"}</span><span>${cov}</span>`;
+   $("detail-criteria").innerHTML = (s.criteria || []).map((x) => `<span class="chip">${esc(x)}</span>`).join("");
++  $("detail-criteria").insertAdjacentHTML("beforeend", searchWarnings(s));
+   const body = $("papers-body");
+   body.innerHTML = "";
+   for (const p of s.papers) body.appendChild(paperRow(p, "search"));
+
+apply patch
+patch: completed
+/Users/paoaiyong/.hermes/cache/scratch/undermind-repo/tests/test_convergence.py
+diff --git a/dls/api.py b/dls/api.py
+index 1da49b5f487e632aba479d47563cccfb680ce241..27a045d98fef1212ee58bfbf555f4d82e46b6650
+--- a/dls/api.py
++++ b/dls/api.py
+@@ -308,6 +308,7 @@
+                 "with_full_text": outcome.with_full_text,
+                 "rounds": outcome.rounds,
+                 "converged": outcome.converged,
++                "degraded": outcome.degraded,
+                 "coverage": outcome.coverage,
+                 "warnings": outcome.warnings,
+             }
+@@ -330,6 +331,8 @@
+                 "search_id": outcome.search_id,
+                 "found": outcome.found,
+                 "excluded": outcome.excluded_count,
++                "converged": outcome.converged,
++                "degraded": outcome.degraded,
+                 "warnings": outcome.warnings,
+             }
+ 
+diff --git a/dls/engine.py b/dls/engine.py
+index a8c90f5d4356d7796b294d72378106e8f8cd29d8..860302bf9c87469fceaf554d129a4f36bc87796a
+--- a/dls/engine.py
++++ b/dls/engine.py
+@@ -56,14 +56,15 @@
+             paper.match_reason = reason
+         return papers
+ 
+-    def _snowball(self, seeds: list[Paper], limit_per_seed: int = 30) -> list[Paper]:
++    def _snowball(self, seeds: list[Paper], warnings: list[str], limit_per_seed: int = 30) -> list[Paper]:
+         out: list[Paper] = []
+         for seed in seeds:
+             label = f"[{seed.key}]" if seed.key else f"'{seed.title[:40]}'"
+             for fetcher, direction in ((self.s2.citations, "citations"), (self.s2.references, "references")):
+                 try:
+                     found = fetcher(seed.paper_id, limit=limit_per_seed)
+-                except Exception:
++                except Exception as exc:
++                    warnings.append(f"{direction} lookup failed for {label}: {exc}")
+                     continue
+                 for p in found:
+                     if p.found_via is None:
+@@ -125,15 +126,18 @@
+         seen_keys: set[str] = set(identity_keys(seed))
+         pool: list[Paper] = []
+         frontier = [seed]
++        converged = False
++        rounds_done = 0
+         for hop in range(1, hops + 1):
++            rounds_done = hop
+             nxt: list[Paper] = []
+             for node in frontier:
+                 node_label = f"[{node.key}]" if node.key else f"'{node.title[:40]}'"
+                 for fetcher, direction in ((self.s2.citations, "citations"), (self.s2.references, "references")):
+                     try:
+                         found = fetcher(node.paper_id, limit=per_direction)
+-                    except Exception:
+-                        warnings.append(f"{direction} lookup failed for {node_label}.")
++                    except Exception as exc:
++                        warnings.append(f"{direction} lookup failed for {node_label}: {exc}")
+                         continue
+                     for p in found:
+                         if identity_keys(p) & seen_keys:
+@@ -144,6 +148,7 @@
+                         pool.append(p)
+                         nxt.append(p)
+             if not nxt:
++                converged = not warnings
+                 break
+             # Score this hop before deciding the next frontier.
+             hop_scored = self._score(criteria, nxt)
+@@ -155,6 +160,7 @@
+             )[:5]
+             progress("Adapting and searching again", f"hop {hop}: {len(nxt)} neighbours")
+             if not frontier:
++                converged = not warnings
+                 break
+ 
+         included = [p for p in pool if (p.match or 0) >= self.include_threshold]
+@@ -166,7 +172,8 @@
+             "excluded": len(pool) - len(included),
+             "candidates": len(pool),
+         }
+-        self.store.save_results(search_id, pool, included_db_ids, counts, None)
++        self.store.save_results(search_id, pool, included_db_ids, counts, None,
++                                degraded=bool(warnings), warnings=warnings, converged=converged)
+         progress("Done", f"{counts['found']} connected papers · {counts['excluded']} excluded")
+         return SearchOutcome(
+             search_id=search_id,
+@@ -175,10 +182,11 @@
+             included=included,
+             excluded_count=counts["excluded"],
+             with_full_text=counts["with_full_text"],
+-            rounds=hops,
+-            converged=True,
++            rounds=rounds_done,
++            converged=converged,
+             coverage=None,
+             warnings=warnings,
++            degraded=bool(warnings),
+         )
+ 
+     # ------------------------------------------------------------------
+@@ -205,21 +213,21 @@
+             try:
+                 pool.extend(self.s2.search(q, limit=per_query))
+             except RateLimited:
+-                warnings.append("Semantic Scholar rate-limited part of the initial search.")
++                warnings.append(f"Semantic Scholar initial search rate-limited for query {q!r}.")
+                 continue
+             except Exception as exc:  # network etc.
+-                warnings.append(f"Semantic Scholar search failed: {exc}")
++                warnings.append(f"Semantic Scholar initial search failed for query {q!r}: {exc}")
+                 continue
+         try:
+             if self.openalex is not None:
+                 pool.extend(self.openalex.search(question, per_page=25))
+-        except Exception:
+-            warnings.append("OpenAlex channel unavailable; running single-source.")
++        except Exception as exc:
++            warnings.append(f"OpenAlex initial search failed for query {question!r}: {exc}")
+         if self.crossref is not None:
+             try:
+                 pool.extend(self.crossref.search(question, rows=per_query))
+-            except Exception:
+-                warnings.append("Crossref channel unavailable.")
++            except Exception as exc:
++                warnings.append(f"Crossref initial search failed for query {question!r}: {exc}")
+ 
+         pool = dedupe(pool)
+         for p in pool:
+@@ -247,7 +255,7 @@
+             reflection = self.llm.reflect(criteria, sorted(included, key=lambda p: -(p.match or 0)), round_no)
+             seeds = sorted(included, key=lambda p: -(p.match or 0))[:seed_top]
+             progress("Adapting and searching again", f"snowballing from {len(seeds)} seeds")
+-            candidates = dedupe(self._snowball(seeds))
++            candidates = dedupe(self._snowball(seeds, warnings))
+             # The reflection step may propose fresh queries; run them too.
+             for new_q in reflection.get("new_queries") or []:
+                 try:
+@@ -256,13 +264,14 @@
+                         if p.found_via is None:
+                             p.found_via = "reflection query"
+                     candidates = dedupe(candidates + extra)
+-                except Exception:
+-                    continue
++                except Exception as exc:
++                    seed_labels = ", ".join(f"[{p.key}]" if p.key else repr(p.title[:40]) for p in seeds) or "no seeds"
++                    warnings.append(f"reflection query search failed for {new_q!r} (seeds: {seed_labels}): {exc}")
+             candidates = [c for c in candidates if not (identity_keys(c) & seen_keys)]
+             for c in candidates:
+                 seen_keys |= identity_keys(c)
+             if not candidates:
+-                converged = True
++                converged = not warnings
+                 break
+             new_scored = self._score(criteria, candidates)
+             for p in new_scored:
+@@ -272,7 +281,7 @@
+             included.extend(new_included)
+             gain = len(new_included) / max(1, len(included))
+             if reflection.get("stop") or gain < 0.03:
+-                converged = True
++                converged = not warnings
+                 break
+ 
+         included.sort(key=lambda p: -(p.match or 0))
+@@ -299,7 +308,8 @@
+             "excluded": len(scored) - len(included),
+             "candidates": len(scored),
+         }
+-        self.store.save_results(search_id, scored, included_db_ids, counts, coverage)
++        self.store.save_results(search_id, scored, included_db_ids, counts, coverage,
++                                degraded=bool(warnings), warnings=warnings, converged=converged)
+         # save_results upserts again internally for any paper missing db_id; keep ids consistent.
+         progress("Done", f"{counts['found']} papers · {counts['with_full_text']} with full text · {counts['excluded']} excluded")
+ 
+@@ -314,4 +324,5 @@
+             converged=converged,
+             coverage=coverage,
+             warnings=warnings,
++            degraded=bool(warnings),
+         )
+diff --git a/dls/models.py b/dls/models.py
+index 3e3591bc0a6332418857ec910334ea5655d5e570..2116374c4d2039943a2bb98ec492597ff1104c78
+--- a/dls/models.py
++++ b/dls/models.py
+@@ -67,6 +67,7 @@
+     converged: bool
+     coverage: dict | None  # discovery-curve estimate, see engine.estimate_coverage
+     warnings: list[str] = field(default_factory=list)
++    degraded: bool = False
+ 
+     @property
+     def found(self) -> int:
+diff --git a/dls/store.py b/dls/store.py
+index 41dccf24e29ad61873324d551a7ab20d5d938d31..a4470ae67fd94096aeeb60ccdc5a729cad862e4b
+--- a/dls/store.py
++++ b/dls/store.py
+@@ -87,6 +87,14 @@
+         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(search_results)")}
+         if "provenance" not in cols:
+             self.conn.execute("ALTER TABLE search_results ADD COLUMN provenance TEXT")
++        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(searches)")}
++        for name, definition in (
++            ("degraded", "INTEGER NOT NULL DEFAULT 0"),
++            ("warnings", "TEXT NOT NULL DEFAULT '[]'"),
++            ("converged", "INTEGER NOT NULL DEFAULT 0"),
++        ):
++            if name not in cols:
++                self.conn.execute(f"ALTER TABLE searches ADD COLUMN {name} {definition}")
+         self.conn.commit()
+ 
+     # -- projects ---------------------------------------------------------
+@@ -221,7 +229,8 @@
+         self.conn.commit()
+         return int(cur.lastrowid)
+ 
+-    def save_results(self, search_id: int, scored: list[Paper], included_ids: set[int], counts: dict, coverage: dict | None) -> None:
++    def save_results(self, search_id: int, scored: list[Paper], included_ids: set[int], counts: dict, coverage: dict | None,
++                     *, degraded: bool = False, warnings: list[str] | None = None, converged: bool = False) -> None:
+         rank = 0
+         for paper in scored:
+             db_id = getattr(paper, "db_id", None)
+@@ -237,8 +246,9 @@
+                 (search_id, db_id, paper.match, paper.match_reason, 1 if is_included else 0, rank if is_included else None, paper.found_via),
+             )
+         self.conn.execute(
+-            "UPDATE searches SET counts = ?, coverage = ? WHERE id = ?",
+-            (json.dumps(counts), json.dumps(coverage) if coverage else None, search_id),
++            "UPDATE searches SET counts = ?, coverage = ?, degraded = ?, warnings = ?, converged = ? WHERE id = ?",
++            (json.dumps(counts), json.dumps(coverage) if coverage else None,
++             int(degraded), json.dumps(warnings or []), int(converged), search_id),
+         )
+         self.conn.commit()
+ 
+@@ -254,6 +264,9 @@
+             "answers": json.loads(row["answers"] or "{}"),
+             "counts": json.loads(row["counts"] or "{}"),
+             "coverage": json.loads(row["coverage"]) if row["coverage"] else None,
++            "degraded": bool(row["degraded"]),
++            "warnings": json.loads(row["warnings"] or "[]"),
++            "converged": bool(row["converged"]),
+             "created_at": row["created_at"],
+         }
+ 
+diff --git a/tests/test_convergence.py b/tests/test_convergence.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..bac77a90594117c12b4fd89162b926b10682ee20
+--- /dev/null
++++ b/tests/test_convergence.py
+@@ -0,0 +1,136 @@
++"""Offline regression tests for honest convergence and persisted diagnostics."""
++
++import sqlite3
++import tempfile
++import unittest
++from pathlib import Path
++from unittest.mock import Mock
++
++from dls.engine import DeepSearchEngine
++from dls.models import Paper
++from dls.store import SCHEMA, Store
++
++
++class TestConvergence(unittest.TestCase):
++    def setUp(self):
++        self.tmp = tempfile.TemporaryDirectory()
++        self.addCleanup(self.tmp.cleanup)
++        self.path = Path(self.tmp.name) / "test.db"
++        self.store = Store(self.path)
++        self.addCleanup(self.store.conn.close)
++        self.seed = Paper("seed", "Seed paper", key="Seed25")
++        self.s2 = Mock()
++        self.s2.search.return_value = [self.seed]
++        self.s2.citations.return_value = []
++        self.s2.references.return_value = []
++        self.llm = Mock()
++        self.llm.score_matches.side_effect = lambda criteria, papers: [(90, "relevant") for _ in papers]
++        self.llm.reflect.return_value = {"new_queries": [], "stop": False}
++        self.engine = DeepSearchEngine(self.s2, None, self.llm, self.store)
++
++    def assert_status(self, outcome, converged, degraded):
++        self.assertEqual(outcome.converged, converged)
++        self.assertEqual(outcome.degraded, degraded)
++        stored = self.store.get_search(outcome.search_id)
++        self.assertEqual(stored["converged"], converged)
++        self.assertEqual(stored["degraded"], degraded)
++        self.assertEqual(stored["warnings"], outcome.warnings)
++
++    def test_snowball_all_failed(self):
++        self.s2.citations.side_effect = RuntimeError("citations offline")
++        self.s2.references.side_effect = RuntimeError("references offline")
++        outcome = self.engine.run("q", ["q"])
++        self.assert_status(outcome, False, True)
++        self.assertEqual(len(outcome.warnings), 2)
++        self.assertIn("citations lookup failed for [Seed25]", outcome.warnings[0])
++        self.assertIn("references lookup failed for [Seed25]", outcome.warnings[1])
++
++    def test_initial_all_failed(self):
++        self.s2.search.side_effect = RuntimeError("S2 offline")
++        self.engine.openalex = Mock()
++        self.engine.openalex.search.side_effect = RuntimeError("OA offline")
++        self.engine.crossref = Mock()
++        self.engine.crossref.search.side_effect = RuntimeError("Crossref offline")
++        outcome = self.engine.run("q", ["q"])
++        self.assert_status(outcome, False, True)
++        self.assertEqual(outcome.found, 0)
++        self.assertEqual(len(outcome.warnings), 3)
++
++    def test_initial_failure_without_rounds(self):
++        self.s2.search.side_effect = RuntimeError("offline")
++        self.assert_status(self.engine.run("q", ["q"], max_rounds=0), False, True)
++
++    def test_normal_no_new_candidates(self):
++        outcome = self.engine.run("q", ["q"])
++        self.assert_status(outcome, True, False)
++        self.assertEqual(outcome.warnings, [])
++
++    def test_successful_empty_initial_search(self):
++        self.s2.search.return_value = []
++        self.assert_status(self.engine.run("q", ["q"]), True, False)
++
++    def test_reflection_query_failure(self):
++        self.llm.reflect.return_value = {"new_queries": ["fresh query"], "stop": False}
++        self.s2.search.side_effect = [[self.seed], RuntimeError("reflection offline")]
++        outcome = self.engine.run("q", ["q"])
++        self.assert_status(outcome, False, True)
++        self.assertIn("reflection query", outcome.warnings[0])
++        self.assertIn("fresh query", outcome.warnings[0])
++        self.assertIn("[Seed25]", outcome.warnings[0])
++
++    def test_previous_round_failure_is_not_forgotten(self):
++        self.s2.citations.side_effect = [RuntimeError("offline"), [], []]
++        self.s2.references.side_effect = [[Paper("next", "Next paper")], [], []]
++        self.assert_status(self.engine.run("q", ["q"]), False, True)
++
++    def test_reflection_stop_with_failed_channel(self):
++        self.s2.citations.side_effect = RuntimeError("offline")
++        self.s2.references.return_value = [Paper("next", "Next paper")]
++        self.llm.reflect.return_value = {"new_queries": [], "stop": True}
++        self.assert_status(self.engine.run("q", ["q"]), False, True)
++
++    def test_trace_exhausted(self):
++        self.assert_status(self.engine.trace(self.seed), True, False)
++
++    def test_trace_failed(self):
++        self.s2.citations.side_effect = RuntimeError("offline")
++        outcome = self.engine.trace(self.seed)
++        self.assert_status(outcome, False, True)
++        self.assertIn("citations lookup failed for [Seed25]", outcome.warnings[0])
++
++    def test_trace_hop_limit_is_not_convergence(self):
++        self.s2.citations.return_value = [Paper("next", "Next paper")]
++        outcome = self.engine.trace(self.seed, hops=1)
++        self.assert_status(outcome, False, False)
++        self.assertEqual(outcome.rounds, 1)
++
++    def test_trace_converges_after_frontier_exhausted(self):
++        self.s2.citations.side_effect = [[Paper("next", "Next paper")], []]
++        outcome = self.engine.trace(self.seed, hops=3)
++        self.assert_status(outcome, True, False)
++        self.assertEqual(outcome.rounds, 2)
++
++    def test_diagnostics_survive_reopen(self):
++        self.s2.citations.side_effect = RuntimeError("offline")
++        outcome = self.engine.run("q", ["q"])
++        reopened = Store(self.path)
++        self.addCleanup(reopened.conn.close)
++        stored = reopened.get_search(outcome.search_id)
++        self.assertTrue(stored["degraded"])
++        self.assertEqual(stored["warnings"], outcome.warnings)
++
++    def test_legacy_database_migration_is_repeatable(self):
++        path = Path(self.tmp.name) / "legacy.db"
++        with sqlite3.connect(path) as conn:
++            conn.executescript(SCHEMA)
++            conn.execute("INSERT INTO projects (id, name, created_at) VALUES (1, 'old', 0)")
++            conn.execute("INSERT INTO searches (project_id, question, created_at) VALUES (1, 'q', 0)")
++        for _ in range(2):
++            migrated = Store(path)
++            try:
++                stored = migrated.get_search(1)
++                self.assertFalse(stored["degraded"])
++                self.assertFalse(stored["converged"])
++                self.assertEqual(stored["warnings"], [])
++            finally:
++                migrated.conn.close()
+diff --git a/webapp/js/app.js b/webapp/js/app.js
+index 182cbf0b950bcc542498e8972a394a9f25a46608..f3e5554086780879f8fda4642d4348c23f77b985
+--- a/webapp/js/app.js
++++ b/webapp/js/app.js
+@@ -90,6 +90,12 @@
+ }
+ 
+ // Run a job: stream progress into the log, return the final event.
++function searchWarnings(result) {
++  if (!result?.degraded && !result?.warnings?.length) return "";
++  return `<div role="alert" class="status-error"><strong>${result.degraded ? "⚠ 部分数据源失败，结果可能不完整，未收敛" : "⚠ 检索警告"}</strong>` +
++    `<ul>${(result.warnings || []).map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>`;
++}
++
+ async function runJob(jobId, label) {
+   switchTab("progress");
+   if ($("job-log").querySelector(".muted")) $("job-log").innerHTML = "";
+@@ -97,9 +103,10 @@
+   let headEl = null;
+   const final = await watchJob(jobId, (ev) => { headEl = render(ev) || headEl; });
+   const status = document.createElement("span");
+-  status.className = final.type === "done" ? "status-done" : "status-error";
+-  status.textContent = final.type === "done" ? "✓ 完成" : `✗ ${final.error || "失败"}`;
++  status.className = final.type === "done" && !final.result?.degraded ? "status-done" : "status-error";
++  status.textContent = final.type === "done" ? (final.result?.degraded ? "⚠ 完成，结果不完整" : "✓ 完成") : `✗ ${final.error || "失败"}`;
+   (headEl || $("job-log")).appendChild(status);
++  $("job-log").insertAdjacentHTML("beforeend", searchWarnings(final.result));
+   return final;
+ }
+ 
+@@ -201,6 +208,7 @@
+     `<span>入选 ${c.found ?? s.papers.length} 篇</span><span>全文 ${c.with_full_text ?? 0}</span>` +
+     `<span>排除 ${c.excluded ?? 0}</span><span>候选 ${c.candidates ?? "?"}</span><span>${cov}</span>`;
+   $("detail-criteria").innerHTML = (s.criteria || []).map((x) => `<span class="chip">${esc(x)}</span>`).join("");
++  $("detail-criteria").insertAdjacentHTML("beforeend", searchWarnings(s));
+   const body = $("papers-body");
+   body.innerHTML = "";
+   for (const p of s.papers) body.appendChild(paperRow(p, "search"));
+
+exec
+/bin/zsh -lc 'python -m unittest discover -s tests' in /Users/paoaiyong/.hermes/cache/scratch/undermind-repo
+ succeeded in 730ms:
+...../Users/paoaiyong/.hermes/installs/88d29d1df47a658d/environments/0267a5db45764b189882ac2eee6202d4/venv/lib/python3.14/site-packages/pydantic/_internal/_generate_schema.py:945: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x106ee46d0>
+  if get_schema is None and (validators := getattr(obj, '__get_validators__', None)) is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/installs/88d29d1df47a658d/environments/0267a5db45764b189882ac2eee6202d4/venv/lib/python3.14/site-packages/pydantic/_internal/_generate_schema.py:945: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x1071163e0>
+  if get_schema is None and (validators := getattr(obj, '__get_validators__', None)) is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/installs/88d29d1df47a658d/environments/0267a5db45764b189882ac2eee6202d4/venv/lib/python3.14/site-packages/pydantic/_internal/_generate_schema.py:945: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10712cd60>
+  if get_schema is None and (validators := getattr(obj, '__get_validators__', None)) is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/installs/88d29d1df47a658d/environments/0267a5db45764b189882ac2eee6202d4/venv/lib/python3.14/site-packages/pydantic/_internal/_generate_schema.py:945: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10713b010>
+  if get_schema is None and (validators := getattr(obj, '__get_validators__', None)) is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/installs/88d29d1df47a658d/environments/0267a5db45764b189882ac2eee6202d4/venv/lib/python3.14/site-packages/pydantic/_internal/_generate_schema.py:945: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x10713bb50>
+  if get_schema is None and (validators := getattr(obj, '__get_validators__', None)) is not None:
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+........................./Users/paoaiyong/.hermes/tools/python-3.14.9+20261021-darwin-arm64/lib/python3.14/unittest/mock.py:2259: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x1071d74c0>
+  def __init__(self, name, parent):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/tools/python-3.14.9+20261021-darwin-arm64/lib/python3.14/unittest/mock.py:2259: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x1071e0220>
+  def __init__(self, name, parent):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/tools/python-3.14.9+20261021-darwin-arm64/lib/python3.14/unittest/mock.py:2259: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x1071e0310>
+  def __init__(self, name, parent):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/tools/python-3.14.9+20261021-darwin-arm64/lib/python3.14/unittest/mock.py:2259: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x1071e0400>
+  def __init__(self, name, parent):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/tools/python-3.14.9+20261021-darwin-arm64/lib/python3.14/unittest/mock.py:2259: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x1071e05e0>
+  def __init__(self, name, parent):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.......
+----------------------------------------------------------------------
+Ran 37 tests in 0.405s
+
+OK
+
+codex
+核心修复和新增离线回归测试已通过，覆盖了 snowball、初始搜索、反思查询失败，以及 trace 正常耗尽和跳数耗尽的区别。接下来补查 API：确认降级结果仍以 `done` 完成，且 job 结果和历史搜索接口都保留 `degraded` 与完整 warnings。
+
+apply patch
+patch: completed
+/Users/paoaiyong/.hermes/cache/scratch/undermind-repo/tests/test_api.py
+diff --git a/dls/api.py b/dls/api.py
+index 1da49b5f487e632aba479d47563cccfb680ce241..27a045d98fef1212ee58bfbf555f4d82e46b6650
+--- a/dls/api.py
++++ b/dls/api.py
+@@ -308,6 +308,7 @@
+                 "with_full_text": outcome.with_full_text,
+                 "rounds": outcome.rounds,
+                 "converged": outcome.converged,
++                "degraded": outcome.degraded,
+                 "coverage": outcome.coverage,
+                 "warnings": outcome.warnings,
+             }
+@@ -330,6 +331,8 @@
+                 "search_id": outcome.search_id,
+                 "found": outcome.found,
+                 "excluded": outcome.excluded_count,
++                "converged": outcome.converged,
++                "degraded": outcome.degraded,
+                 "warnings": outcome.warnings,
+             }
+ 
+diff --git a/dls/engine.py b/dls/engine.py
+index a8c90f5d4356d7796b294d72378106e8f8cd29d8..860302bf9c87469fceaf554d129a4f36bc87796a
+--- a/dls/engine.py
++++ b/dls/engine.py
+@@ -56,14 +56,15 @@
+             paper.match_reason = reason
+         return papers
+ 
+-    def _snowball(self, seeds: list[Paper], limit_per_seed: int = 30) -> list[Paper]:
++    def _snowball(self, seeds: list[Paper], warnings: list[str], limit_per_seed: int = 30) -> list[Paper]:
+         out: list[Paper] = []
+         for seed in seeds:
+             label = f"[{seed.key}]" if seed.key else f"'{seed.title[:40]}'"
+             for fetcher, direction in ((self.s2.citations, "citations"), (self.s2.references, "references")):
+                 try:
+                     found = fetcher(seed.paper_id, limit=limit_per_seed)
+-                except Exception:
++                except Exception as exc:
++                    warnings.append(f"{direction} lookup failed for {label}: {exc}")
+                     continue
+                 for p in found:
+                     if p.found_via is None:
+@@ -125,15 +126,18 @@
+         seen_keys: set[str] = set(identity_keys(seed))
+         pool: list[Paper] = []
+         frontier = [seed]
++        converged = False
++        rounds_done = 0
+         for hop in range(1, hops + 1):
++            rounds_done = hop
+             nxt: list[Paper] = []
+             for node in frontier:
+                 node_label = f"[{node.key}]" if node.key else f"'{node.title[:40]}'"
+                 for fetcher, direction in ((self.s2.citations, "citations"), (self.s2.references, "references")):
+                     try:
+                         found = fetcher(node.paper_id, limit=per_direction)
+-                    except Exception:
+-                        warnings.append(f"{direction} lookup failed for {node_label}.")
++                    except Exception as exc:
++                        warnings.append(f"{direction} lookup failed for {node_label}: {exc}")
+                         continue
+                     for p in found:
+                         if identity_keys(p) & seen_keys:
+@@ -144,6 +148,7 @@
+                         pool.append(p)
+                         nxt.append(p)
+             if not nxt:
++                converged = not warnings
+                 break
+             # Score this hop before deciding the next frontier.
+             hop_scored = self._score(criteria, nxt)
+@@ -155,6 +160,7 @@
+             )[:5]
+             progress("Adapting and searching again", f"hop {hop}: {len(nxt)} neighbours")
+             if not frontier:
++                converged = not warnings
+                 break
+ 
+         included = [p for p in pool if (p.match or 0) >= self.include_threshold]
+@@ -166,7 +172,8 @@
+             "excluded": len(pool) - len(included),
+             "candidates": len(pool),
+         }
+-        self.store.save_results(search_id, pool, included_db_ids, counts, None)
++        self.store.save_results(search_id, pool, included_db_ids, counts, None,
++                                degraded=bool(warnings), warnings=warnings, converged=converged)
+         progress("Done", f"{counts['found']} connected papers · {counts['excluded']} excluded")
+         return SearchOutcome(
+             search_id=search_id,
+@@ -175,10 +182,11 @@
+             included=included,
+             excluded_count=counts["excluded"],
+             with_full_text=counts["with_full_text"],
+-            rounds=hops,
+-            converged=True,
++            rounds=rounds_done,
++            converged=converged,
+             coverage=None,
+             warnings=warnings,
++            degraded=bool(warnings),
+         )
+ 
+     # ------------------------------------------------------------------
+@@ -205,21 +213,21 @@
+             try:
+                 pool.extend(self.s2.search(q, limit=per_query))
+             except RateLimited:
+-                warnings.append("Semantic Scholar rate-limited part of the initial search.")
++                warnings.append(f"Semantic Scholar initial search rate-limited for query {q!r}.")
+                 continue
+             except Exception as exc:  # network etc.
+-                warnings.append(f"Semantic Scholar search failed: {exc}")
++                warnings.append(f"Semantic Scholar initial search failed for query {q!r}: {exc}")
+                 continue
+         try:
+             if self.openalex is not None:
+                 pool.extend(self.openalex.search(question, per_page=25))
+-        except Exception:
+-            warnings.append("OpenAlex channel unavailable; running single-source.")
++        except Exception as exc:
++            warnings.append(f"OpenAlex initial search failed for query {question!r}: {exc}")
+         if self.crossref is not None:
+             try:
+                 pool.extend(self.crossref.search(question, rows=per_query))
+-            except Exception:
+-                warnings.append("Crossref channel unavailable.")
++            except Exception as exc:
++                warnings.append(f"Crossref initial search failed for query {question!r}: {exc}")
+ 
+         pool = dedupe(pool)
+         for p in pool:
+@@ -247,7 +255,7 @@
+             reflection = self.llm.reflect(criteria, sorted(included, key=lambda p: -(p.match or 0)), round_no)
+             seeds = sorted(included, key=lambda p: -(p.match or 0))[:seed_top]
+             progress("Adapting and searching again", f"snowballing from {len(seeds)} seeds")
+-            candidates = dedupe(self._snowball(seeds))
++            candidates = dedupe(self._snowball(seeds, warnings))
+             # The reflection step may propose fresh queries; run them too.
+             for new_q in reflection.get("new_queries") or []:
+                 try:
+@@ -256,13 +264,14 @@
+                         if p.found_via is None:
+                             p.found_via = "reflection query"
+                     candidates = dedupe(candidates + extra)
+-                except Exception:
+-                    continue
++                except Exception as exc:
++                    seed_labels = ", ".join(f"[{p.key}]" if p.key else repr(p.title[:40]) for p in seeds) or "no seeds"
++                    warnings.append(f"reflection query search failed for {new_q!r} (seeds: {seed_labels}): {exc}")
+             candidates = [c for c in candidates if not (identity_keys(c) & seen_keys)]
+             for c in candidates:
+                 seen_keys |= identity_keys(c)
+             if not candidates:
+-                converged = True
++                converged = not warnings
+                 break
+             new_scored = self._score(criteria, candidates)
+             for p in new_scored:
+@@ -272,7 +281,7 @@
+             included.extend(new_included)
+             gain = len(new_included) / max(1, len(included))
+             if reflection.get("stop") or gain < 0.03:
+-                converged = True
++                converged = not warnings
+                 break
+ 
+         included.sort(key=lambda p: -(p.match or 0))
+@@ -299,7 +308,8 @@
+             "excluded": len(scored) - len(included),
+             "candidates": len(scored),
+         }
+-        self.store.save_results(search_id, scored, included_db_ids, counts, coverage)
++        self.store.save_results(search_id, scored, included_db_ids, counts, coverage,
++                                degraded=bool(warnings), warnings=warnings, converged=converged)
+         # save_results upserts again internally for any paper missing db_id; keep ids consistent.
+         progress("Done", f"{counts['found']} papers · {counts['with_full_text']} with full text · {counts['excluded']} excluded")
+ 
+@@ -314,4 +324,5 @@
+             converged=converged,
+             coverage=coverage,
+             warnings=warnings,
++            degraded=bool(warnings),
+         )
+diff --git a/dls/models.py b/dls/models.py
+index 3e3591bc0a6332418857ec910334ea5655d5e570..2116374c4d2039943a2bb98ec492597ff1104c78
+--- a/dls/models.py
++++ b/dls/models.py
+@@ -67,6 +67,7 @@
+     converged: bool
+     coverage: dict | None  # discovery-curve estimate, see engine.estimate_coverage
+     warnings: list[str] = field(default_factory=list)
++    degraded: bool = False
+ 
+     @property
+     def found(self) -> int:
+diff --git a/dls/store.py b/dls/store.py
+index 41dccf24e29ad61873324d551a7ab20d5d938d31..a4470ae67fd94096aeeb60ccdc5a729cad862e4b
+--- a/dls/store.py
++++ b/dls/store.py
+@@ -87,6 +87,14 @@
+         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(search_results)")}
+         if "provenance" not in cols:
+             self.conn.execute("ALTER TABLE search_results ADD COLUMN provenance TEXT")
++        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(searches)")}
++        for name, definition in (
++            ("degraded", "INTEGER NOT NULL DEFAULT 0"),
++            ("warnings", "TEXT NOT NULL DEFAULT '[]'"),
++            ("converged", "INTEGER NOT NULL DEFAULT 0"),
++        ):
++            if name not in cols:
++                self.conn.execute(f"ALTER TABLE searches ADD COLUMN {name} {definition}")
+         self.conn.commit()
+ 
+     # -- projects ---------------------------------------------------------
+@@ -221,7 +229,8 @@
+         self.conn.commit()
+         return int(cur.lastrowid)
+ 
+-    def save_results(self, search_id: int, scored: list[Paper], included_ids: set[int], counts: dict, coverage: dict | None) -> None:
++    def save_results(self, search_id: int, scored: list[Paper], included_ids: set[int], counts: dict, coverage: dict | None,
++                     *, degraded: bool = False, warnings: list[str] | None = None, converged: bool = False) -> None:
+         rank = 0
+         for paper in scored:
+             db_id = getattr(paper, "db_id", None)
+@@ -237,8 +246,9 @@
+                 (search_id, db_id, paper.match, paper.match_reason, 1 if is_included else 0, rank if is_included else None, paper.found_via),
+             )
+         self.conn.execute(
+-            "UPDATE searches SET counts = ?, coverage = ? WHERE id = ?",
+-            (json.dumps(counts), json.dumps(coverage) if coverage else None, search_id),
++            "UPDATE searches SET counts = ?, coverage = ?, degraded = ?, warnings = ?, converged = ? WHERE id = ?",
++            (json.dumps(counts), json.dumps(coverage) if coverage else None,
++             int(degraded), json.dumps(warnings or []), int(converged), search_id),
+         )
+         self.conn.commit()
+ 
+@@ -254,6 +264,9 @@
+             "answers": json.loads(row["answers"] or "{}"),
+             "counts": json.loads(row["counts"] or "{}"),
+             "coverage": json.loads(row["coverage"]) if row["coverage"] else None,
++            "degraded": bool(row["degraded"]),
++            "warnings": json.loads(row["warnings"] or "[]"),
++            "converged": bool(row["converged"]),
+             "created_at": row["created_at"],
+         }
+ 
+diff --git a/tests/test_api.py b/tests/test_api.py
+index c3759c746b985f21bab7e956f812e8deb95b635a..da0dc9c2180632812aa8a0c7aabcf02cead24be2
+--- a/tests/test_api.py
++++ b/tests/test_api.py
+@@ -12,6 +12,7 @@
+ import types
+ import unittest
+ from pathlib import Path
++from unittest.mock import Mock
+ 
+ try:
+     from fastapi.testclient import TestClient
+@@ -19,6 +20,7 @@
+     raise unittest.SkipTest("fastapi not installed (pip install -e .[api])")
+ 
+ from dls.api import create_app
++from dls.engine import DeepSearchEngine
+ from dls.models import Paper, SearchOutcome
+ from dls.store import Store
+ 
+@@ -132,6 +134,40 @@
+         self.assertIn('"type": "progress"', text)
+         self.assertIn('"type": "done"', text)
+ 
++    def test_degraded_search_and_trace_complete_with_diagnostics(self):
++        seed = _paper()
++        self.ctx.store.upsert_paper(seed)
++        s2 = Mock()
++        s2.search.return_value = [seed]
++        s2.citations.side_effect = RuntimeError("citations offline")
++        s2.references.side_effect = RuntimeError("references offline")
++        llm = Mock()
++        llm.score_matches.side_effect = lambda criteria, papers: [(90, "relevant") for _ in papers]
++        llm.reflect.return_value = {"new_queries": [], "stop": False}
++        self.ctx.engine = DeepSearchEngine(s2, None, llm, self.ctx.store)
++
++        for endpoint, body in (
++            ("/api/searches", {"question": "q", "criteria": ["q"]}),
++            ("/api/trace", {"identifier": seed.paper_id}),
++        ):
++            with self.subTest(endpoint=endpoint):
++                response = self.client.post(endpoint, json=body)
++                self.assertEqual(response.status_code, 202)
++                snap = _wait_job(self.client, response.json()["job_id"])
++                self.assertEqual(snap["status"], "done", snap)
++                result = snap["result"]
++                self.assertTrue(result["degraded"])
++                self.assertFalse(result["converged"])
++                self.assertEqual(len(result["warnings"]), 2)
++                detail = self.client.get(f"/api/searches/{result['search_id']}").json()
++                self.assertTrue(detail["degraded"])
++                self.assertFalse(detail["converged"])
++                self.assertEqual(detail["warnings"], result["warnings"])
++                listed = self.client.get("/api/searches").json()
++                stored = next(s for s in listed if s["id"] == result["search_id"])
++                self.assertEqual(stored["warnings"], result["warnings"])
++                self.assertTrue(stored["degraded"])
++
+     def test_ask_and_export_and_star(self):
+         r = self.client.post("/api/searches", json={"question": "q"})
+         snap = _wait_job(self.client, r.json()["job_id"])
+diff --git a/tests/test_convergence.py b/tests/test_convergence.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..bac77a90594117c12b4fd89162b926b10682ee20
+--- /dev/null
++++ b/tests/test_convergence.py
+@@ -0,0 +1,136 @@
++"""Offline regression tests for honest convergence and persisted diagnostics."""
++
++import sqlite3
++import tempfile
++import unittest
++from pathlib import Path
++from unittest.mock import Mock
++
++from dls.engine import DeepSearchEngine
++from dls.models import Paper
++from dls.store import SCHEMA, Store
++
++
++class TestConvergence(unittest.TestCase):
++    def setUp(self):
++        self.tmp = tempfile.TemporaryDirectory()
++        self.addCleanup(self.tmp.cleanup)
++        self.path = Path(self.tmp.name) / "test.db"
++        self.store = Store(self.path)
++        self.addCleanup(self.store.conn.close)
++        self.seed = Paper("seed", "Seed paper", key="Seed25")
++        self.s2 = Mock()
++        self.s2.search.return_value = [self.seed]
++        self.s2.citations.return_value = []
++        self.s2.references.return_value = []
++        self.llm = Mock()
++        self.llm.score_matches.side_effect = lambda criteria, papers: [(90, "relevant") for _ in papers]
++        self.llm.reflect.return_value = {"new_queries": [], "stop": False}
++        self.engine = DeepSearchEngine(self.s2, None, self.llm, self.store)
++
++    def assert_status(self, outcome, converged, degraded):
++        self.assertEqual(outcome.converged, converged)
++        self.assertEqual(outcome.degraded, degraded)
++        stored = self.store.get_search(outcome.search_id)
++        self.assertEqual(stored["converged"], converged)
++        self.assertEqual(stored["degraded"], degraded)
++        self.assertEqual(stored["warnings"], outcome.warnings)
++
++    def test_snowball_all_failed(self):
++        self.s2.citations.side_effect = RuntimeError("citations offline")
++        self.s2.references.side_effect = RuntimeError("references offline")
++        outcome = self.engine.run("q", ["q"])
++        self.assert_status(outcome, False, True)
++        self.assertEqual(len(outcome.warnings), 2)
++        self.assertIn("citations lookup failed for [Seed25]", outcome.warnings[0])
++        self.assertIn("references lookup failed for [Seed25]", outcome.warnings[1])
++
++    def test_initial_all_failed(self):
++        self.s2.search.side_effect = RuntimeError("S2 offline")
++        self.engine.openalex = Mock()
++        self.engine.openalex.search.side_effect = RuntimeError("OA offline")
++        self.engine.crossref = Mock()
++        self.engine.crossref.search.side_effect = RuntimeError("Crossref offline")
++        outcome = self.engine.run("q", ["q"])
++        self.assert_status(outcome, False, True)
++        self.assertEqual(outcome.found, 0)
++        self.assertEqual(len(outcome.warnings), 3)
++
++    def test_initial_failure_without_rounds(self):
++        self.s2.search.side_effect = RuntimeError("offline")
++        self.assert_status(self.engine.run("q", ["q"], max_rounds=0), False, True)
++
++    def test_normal_no_new_candidates(self):
++        outcome = self.engine.run("q", ["q"])
++        self.assert_status(outcome, True, False)
++        self.assertEqual(outcome.warnings, [])
++
++    def test_successful_empty_initial_search(self):
++        self.s2.search.return_value = []
++        self.assert_status(self.engine.run("q", ["q"]), True, False)
++
++    def test_reflection_query_failure(self):
++        self.llm.reflect.return_value = {"new_queries": ["fresh query"], "stop": False}
++        self.s2.search.side_effect = [[self.seed], RuntimeError("reflection offline")]
++        outcome = self.engine.run("q", ["q"])
++        self.assert_status(outcome, False, True)
++        self.assertIn("reflection query", outcome.warnings[0])
++        self.assertIn("fresh query", outcome.warnings[0])
++        self.assertIn("[Seed25]", outcome.warnings[0])
++
++    def test_previous_round_failure_is_not_forgotten(self):
++        self.s2.citations.side_effect = [RuntimeError("offline"), [], []]
++        self.s2.references.side_effect = [[Paper("next", "Next paper")], [], []]
++        self.assert_status(self.engine.run("q", ["q"]), False, True)
++
++    def test_reflection_stop_with_failed_channel(self):
++        self.s2.citations.side_effect = RuntimeError("offline")
++        self.s2.references.return_value = [Paper("next", "Next paper")]
++        self.llm.reflect.return_value = {"new_queries": [], "stop": True}
++        self.assert_status(self.engine.run("q", ["q"]), False, True)
++
++    def test_trace_exhausted(self):
++        self.assert_status(self.engine.trace(self.seed), True, False)
++
++    def test_trace_failed(self):
++        self.s2.citations.side_effect = RuntimeError("offline")
++        outcome = self.engine.trace(self.seed)
++        self.assert_status(outcome, False, True)
++        self.assertIn("citations lookup failed for [Seed25]", outcome.warnings[0])
++
++    def test_trace_hop_limit_is_not_convergence(self):
++        self.s2.citations.return_value = [Paper("next", "Next paper")]
++        outcome = self.engine.trace(self.seed, hops=1)
++        self.assert_status(outcome, False, False)
++        self.assertEqual(outcome.rounds, 1)
++
++    def test_trace_converges_after_frontier_exhausted(self):
++        self.s2.citations.side_effect = [[Paper("next", "Next paper")], []]
++        outcome = self.engine.trace(self.seed, hops=3)
++        self.assert_status(outcome, True, False)
++        self.assertEqual(outcome.rounds, 2)
++
++    def test_diagnostics_survive_reopen(self):
++        self.s2.citations.side_effect = RuntimeError("offline")
++        outcome = self.engine.run("q", ["q"])
++        reopened = Store(self.path)
++        self.addCleanup(reopened.conn.close)
++        stored = reopened.get_search(outcome.search_id)
++        self.assertTrue(stored["degraded"])
++        self.assertEqual(stored["warnings"], outcome.warnings)
++
++    def test_legacy_database_migration_is_repeatable(self):
++        path = Path(self.tmp.name) / "legacy.db"
++        with sqlite3.connect(path) as conn:
++            conn.executescript(SCHEMA)
++            conn.execute("INSERT INTO projects (id, name, created_at) VALUES (1, 'old', 0)")
++            conn.execute("INSERT INTO searches (project_id, question, created_at) VALUES (1, 'q', 0)")
++        for _ in range(2):
++            migrated = Store(path)
++            try:
++                stored = migrated.get_search(1)
++                self.assertFalse(stored["degraded"])
++                self.assertFalse(stored["converged"])
++                self.assertEqual(stored["warnings"], [])
++            finally:
++                migrated.conn.close()
+diff --git a/webapp/js/app.js b/webapp/js/app.js
+index 182cbf0b950bcc542498e8972a394a9f25a46608..f3e5554086780879f8fda4642d4348c23f77b985
+--- a/webapp/js/app.js
++++ b/webapp/js/app.js
+@@ -90,6 +90,12 @@
+ }
+ 
+ // Run a job: stream progress into the log, return the final event.
++function searchWarnings(result) {
++  if (!result?.degraded && !result?.warnings?.length) return "";
++  return `<div role="alert" class="status-error"><strong>${result.degraded ? "⚠ 部分数据源失败，结果可能不完整，未收敛" : "⚠ 检索警告"}</strong>` +
++    `<ul>${(result.warnings || []).map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>`;
++}
++
+ async function runJob(jobId, label) {
+   switchTab("progress");
+   if ($("job-log").querySelector(".muted")) $("job-log").innerHTML = "";
+@@ -97,9 +103,10 @@
+   let headEl = null;
+   const final = await watchJob(jobId, (ev) => { headEl = render(ev) || headEl; });
+   const status = document.createElement("span");
+-  status.className = final.type === "done" ? "status-done" : "status-error";
+-  status.textContent = final.type === "done" ? "✓ 完成" : `✗ ${final.error || "失败"}`;
++  status.className = final.type === "done" && !final.result?.degraded ? "status-done" : "status-error";
++  status.textContent = final.type === "done" ? (final.result?.degraded ? "⚠ 完成，结果不完整" : "✓ 完成") : `✗ ${final.error || "失败"}`;
+   (headEl || $("job-log")).appendChild(status);
++  $("job-log").insertAdjacentHTML("beforeend", searchWarnings(final.result));
+   return final;
+ }
+ 
+@@ -201,6 +208,7 @@
+     `<span>入选 ${c.found ?? s.papers.length} 篇</span><span>全文 ${c.with_full_text ?? 0}</span>` +
+     `<span>排除 ${c.excluded ?? 0}</span><span>候选 ${c.candidates ?? "?"}</span><span>${cov}</span>`;
+   $("detail-criteria").innerHTML = (s.criteria || []).map((x) => `<span class="chip">${esc(x)}</span>`).join("");
++  $("detail-criteria").insertAdjacentHTML("beforeend", searchWarnings(s));
+   const body = $("papers-body");
+   body.innerHTML = "";
+   for (const p of s.papers) body.appendChild(paperRow(p, "search"));
+
+exec
+/bin/zsh -lc 'git diff --check; git diff --stat; git diff -- dls/engine.py dls/store.py dls/api.py webapp/js/app.js; command -v node' in /Users/paoaiyong/.hermes/cache/scratch/undermind-repo
+ succeeded in 0ms:
+ dls/api.py        |  3 +++
+ dls/engine.py     | 49 ++++++++++++++++++++++++++++++-------------------
+ dls/models.py     |  1 +
+ dls/store.py      | 19 ++++++++++++++++---
+ tests/test_api.py | 36 ++++++++++++++++++++++++++++++++++++
+ webapp/js/app.js  | 12 ++++++++++--
+ 6 files changed, 96 insertions(+), 24 deletions(-)
+diff --git a/dls/api.py b/dls/api.py
+index 1da49b5..27a045d 100644
+--- a/dls/api.py
++++ b/dls/api.py
+@@ -308,6 +308,7 @@ def create_app(ctx=None) -> FastAPI:
+                 "with_full_text": outcome.with_full_text,
+                 "rounds": outcome.rounds,
+                 "converged": outcome.converged,
++                "degraded": outcome.degraded,
+                 "coverage": outcome.coverage,
+                 "warnings": outcome.warnings,
+             }
+@@ -330,6 +331,8 @@ def create_app(ctx=None) -> FastAPI:
+                 "search_id": outcome.search_id,
+                 "found": outcome.found,
+                 "excluded": outcome.excluded_count,
++                "converged": outcome.converged,
++                "degraded": outcome.degraded,
+                 "warnings": outcome.warnings,
+             }
+ 
+diff --git a/dls/engine.py b/dls/engine.py
+index a8c90f5..860302b 100644
+--- a/dls/engine.py
++++ b/dls/engine.py
+@@ -56,14 +56,15 @@ class DeepSearchEngine:
+             paper.match_reason = reason
+         return papers
+ 
+-    def _snowball(self, seeds: list[Paper], limit_per_seed: int = 30) -> list[Paper]:
++    def _snowball(self, seeds: list[Paper], warnings: list[str], limit_per_seed: int = 30) -> list[Paper]:
+         out: list[Paper] = []
+         for seed in seeds:
+             label = f"[{seed.key}]" if seed.key else f"'{seed.title[:40]}'"
+             for fetcher, direction in ((self.s2.citations, "citations"), (self.s2.references, "references")):
+                 try:
+                     found = fetcher(seed.paper_id, limit=limit_per_seed)
+-                except Exception:
++                except Exception as exc:
++                    warnings.append(f"{direction} lookup failed for {label}: {exc}")
+                     continue
+                 for p in found:
+                     if p.found_via is None:
+@@ -125,15 +126,18 @@ class DeepSearchEngine:
+         seen_keys: set[str] = set(identity_keys(seed))
+         pool: list[Paper] = []
+         frontier = [seed]
++        converged = False
++        rounds_done = 0
+         for hop in range(1, hops + 1):
++            rounds_done = hop
+             nxt: list[Paper] = []
+             for node in frontier:
+                 node_label = f"[{node.key}]" if node.key else f"'{node.title[:40]}'"
+                 for fetcher, direction in ((self.s2.citations, "citations"), (self.s2.references, "references")):
+                     try:
+                         found = fetcher(node.paper_id, limit=per_direction)
+-                    except Exception:
+-                        warnings.append(f"{direction} lookup failed for {node_label}.")
++                    except Exception as exc:
++                        warnings.append(f"{direction} lookup failed for {node_label}: {exc}")
+                         continue
+                     for p in found:
+                         if identity_keys(p) & seen_keys:
+@@ -144,6 +148,7 @@ class DeepSearchEngine:
+                         pool.append(p)
+                         nxt.append(p)
+             if not nxt:
++                converged = not warnings
+                 break
+             # Score this hop before deciding the next frontier.
+             hop_scored = self._score(criteria, nxt)
+@@ -155,6 +160,7 @@ class DeepSearchEngine:
+             )[:5]
+             progress("Adapting and searching again", f"hop {hop}: {len(nxt)} neighbours")
+             if not frontier:
++                converged = not warnings
+                 break
+ 
+         included = [p for p in pool if (p.match or 0) >= self.include_threshold]
+@@ -166,7 +172,8 @@ class DeepSearchEngine:
+             "excluded": len(pool) - len(included),
+             "candidates": len(pool),
+         }
+-        self.store.save_results(search_id, pool, included_db_ids, counts, None)
++        self.store.save_results(search_id, pool, included_db_ids, counts, None,
++                                degraded=bool(warnings), warnings=warnings, converged=converged)
+         progress("Done", f"{counts['found']} connected papers · {counts['excluded']} excluded")
+         return SearchOutcome(
+             search_id=search_id,
+@@ -175,10 +182,11 @@ class DeepSearchEngine:
+             included=included,
+             excluded_count=counts["excluded"],
+             with_full_text=counts["with_full_text"],
+-            rounds=hops,
+-            converged=True,
++            rounds=rounds_done,
++            converged=converged,
+             coverage=None,
+             warnings=warnings,
++            degraded=bool(warnings),
+         )
+ 
+     # ------------------------------------------------------------------
+@@ -205,21 +213,21 @@ class DeepSearchEngine:
+             try:
+                 pool.extend(self.s2.search(q, limit=per_query))
+             except RateLimited:
+-                warnings.append("Semantic Scholar rate-limited part of the initial search.")
++                warnings.append(f"Semantic Scholar initial search rate-limited for query {q!r}.")
+                 continue
+             except Exception as exc:  # network etc.
+-                warnings.append(f"Semantic Scholar search failed: {exc}")
++                warnings.append(f"Semantic Scholar initial search failed for query {q!r}: {exc}")
+                 continue
+         try:
+             if self.openalex is not None:
+                 pool.extend(self.openalex.search(question, per_page=25))
+-        except Exception:
+-            warnings.append("OpenAlex channel unavailable; running single-source.")
++        except Exception as exc:
++            warnings.append(f"OpenAlex initial search failed for query {question!r}: {exc}")
+         if self.crossref is not None:
+             try:
+                 pool.extend(self.crossref.search(question, rows=per_query))
+-            except Exception:
+-                warnings.append("Crossref channel unavailable.")
++            except Exception as exc:
++                warnings.append(f"Crossref initial search failed for query {question!r}: {exc}")
+ 
+         pool = dedupe(pool)
+         for p in pool:
+@@ -247,7 +255,7 @@ class DeepSearchEngine:
+             reflection = self.llm.reflect(criteria, sorted(included, key=lambda p: -(p.match or 0)), round_no)
+             seeds = sorted(included, key=lambda p: -(p.match or 0))[:seed_top]
+             progress("Adapting and searching again", f"snowballing from {len(seeds)} seeds")
+-            candidates = dedupe(self._snowball(seeds))
++            candidates = dedupe(self._snowball(seeds, warnings))
+             # The reflection step may propose fresh queries; run them too.
+             for new_q in reflection.get("new_queries") or []:
+                 try:
+@@ -256,13 +264,14 @@ class DeepSearchEngine:
+                         if p.found_via is None:
+                             p.found_via = "reflection query"
+                     candidates = dedupe(candidates + extra)
+-                except Exception:
+-                    continue
++                except Exception as exc:
++                    seed_labels = ", ".join(f"[{p.key}]" if p.key else repr(p.title[:40]) for p in seeds) or "no seeds"
++                    warnings.append(f"reflection query search failed for {new_q!r} (seeds: {seed_labels}): {exc}")
+             candidates = [c for c in candidates if not (identity_keys(c) & seen_keys)]
+             for c in candidates:
+                 seen_keys |= identity_keys(c)
+             if not candidates:
+-                converged = True
++                converged = not warnings
+                 break
+             new_scored = self._score(criteria, candidates)
+             for p in new_scored:
+@@ -272,7 +281,7 @@ class DeepSearchEngine:
+             included.extend(new_included)
+             gain = len(new_included) / max(1, len(included))
+             if reflection.get("stop") or gain < 0.03:
+-                converged = True
++                converged = not warnings
+                 break
+ 
+         included.sort(key=lambda p: -(p.match or 0))
+@@ -299,7 +308,8 @@ class DeepSearchEngine:
+             "excluded": len(scored) - len(included),
+             "candidates": len(scored),
+         }
+-        self.store.save_results(search_id, scored, included_db_ids, counts, coverage)
++        self.store.save_results(search_id, scored, included_db_ids, counts, coverage,
++                                degraded=bool(warnings), warnings=warnings, converged=converged)
+         # save_results upserts again internally for any paper missing db_id; keep ids consistent.
+         progress("Done", f"{counts['found']} papers · {counts['with_full_text']} with full text · {counts['excluded']} excluded")
+ 
+@@ -314,4 +324,5 @@ class DeepSearchEngine:
+             converged=converged,
+             coverage=coverage,
+             warnings=warnings,
++            degraded=bool(warnings),
+         )
+diff --git a/dls/store.py b/dls/store.py
+index 41dccf2..a4470ae 100644
+--- a/dls/store.py
++++ b/dls/store.py
+@@ -87,6 +87,14 @@ class Store:
+         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(search_results)")}
+         if "provenance" not in cols:
+             self.conn.execute("ALTER TABLE search_results ADD COLUMN provenance TEXT")
++        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(searches)")}
++        for name, definition in (
++            ("degraded", "INTEGER NOT NULL DEFAULT 0"),
++            ("warnings", "TEXT NOT NULL DEFAULT '[]'"),
++            ("converged", "INTEGER NOT NULL DEFAULT 0"),
++        ):
++            if name not in cols:
++                self.conn.execute(f"ALTER TABLE searches ADD COLUMN {name} {definition}")
+         self.conn.commit()
+ 
+     # -- projects ---------------------------------------------------------
+@@ -221,7 +229,8 @@ class Store:
+         self.conn.commit()
+         return int(cur.lastrowid)
+ 
+-    def save_results(self, search_id: int, scored: list[Paper], included_ids: set[int], counts: dict, coverage: dict | None) -> None:
++    def save_results(self, search_id: int, scored: list[Paper], included_ids: set[int], counts: dict, coverage: dict | None,
++                     *, degraded: bool = False, warnings: list[str] | None = None, converged: bool = False) -> None:
+         rank = 0
+         for paper in scored:
+             db_id = getattr(paper, "db_id", None)
+@@ -237,8 +246,9 @@ class Store:
+                 (search_id, db_id, paper.match, paper.match_reason, 1 if is_included else 0, rank if is_included else None, paper.found_via),
+             )
+         self.conn.execute(
+-            "UPDATE searches SET counts = ?, coverage = ? WHERE id = ?",
+-            (json.dumps(counts), json.dumps(coverage) if coverage else None, search_id),
++            "UPDATE searches SET counts = ?, coverage = ?, degraded = ?, warnings = ?, converged = ? WHERE id = ?",
++            (json.dumps(counts), json.dumps(coverage) if coverage else None,
++             int(degraded), json.dumps(warnings or []), int(converged), search_id),
+         )
+         self.conn.commit()
+ 
+@@ -254,6 +264,9 @@ class Store:
+             "answers": json.loads(row["answers"] or "{}"),
+             "counts": json.loads(row["counts"] or "{}"),
+             "coverage": json.loads(row["coverage"]) if row["coverage"] else None,
++            "degraded": bool(row["degraded"]),
++            "warnings": json.loads(row["warnings"] or "[]"),
++            "converged": bool(row["converged"]),
+             "created_at": row["created_at"],
+         }
+ 
+diff --git a/webapp/js/app.js b/webapp/js/app.js
+index 182cbf0..f3e5554 100644
+--- a/webapp/js/app.js
++++ b/webapp/js/app.js
+@@ -90,6 +90,12 @@ function logJobEvent(jobLabel) {
+ }
+ 
+ // Run a job: stream progress into the log, return the final event.
++function searchWarnings(result) {
++  if (!result?.degraded && !result?.warnings?.length) return "";
++  return `<div role="alert" class="status-error"><strong>${result.degraded ? "⚠ 部分数据源失败，结果可能不完整，未收敛" : "⚠ 检索警告"}</strong>` +
++    `<ul>${(result.warnings || []).map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>`;
++}
++
+ async function runJob(jobId, label) {
+   switchTab("progress");
+   if ($("job-log").querySelector(".muted")) $("job-log").innerHTML = "";
+@@ -97,9 +103,10 @@ async function runJob(jobId, label) {
+   let headEl = null;
+   const final = await watchJob(jobId, (ev) => { headEl = render(ev) || headEl; });
+   const status = document.createElement("span");
+-  status.className = final.type === "done" ? "status-done" : "status-error";
+-  status.textContent = final.type === "done" ? "✓ 完成" : `✗ ${final.error || "失败"}`;
++  status.className = final.type === "done" && !final.result?.degraded ? "status-done" : "status-error";
++  status.textContent = final.type === "done" ? (final.result?.degraded ? "⚠ 完成，结果不完整" : "✓ 完成") : `✗ ${final.error || "失败"}`;
+   (headEl || $("job-log")).appendChild(status);
++  $("job-log").insertAdjacentHTML("beforeend", searchWarnings(final.result));
+   return final;
+ }
+ 
+@@ -201,6 +208,7 @@ async function openSearch(id) {
+     `<span>入选 ${c.found ?? s.papers.length} 篇</span><span>全文 ${c.with_full_text ?? 0}</span>` +
+     `<span>排除 ${c.excluded ?? 0}</span><span>候选 ${c.candidates ?? "?"}</span><span>${cov}</span>`;
+   $("detail-criteria").innerHTML = (s.criteria || []).map((x) => `<span class="chip">${esc(x)}</span>`).join("");
++  $("detail-criteria").insertAdjacentHTML("beforeend", searchWarnings(s));
+   const body = $("papers-body");
+   body.innerHTML = "";
+   for (const p of s.papers) body.appendChild(paperRow(p, "search"));
+/Users/paoaiyong/.hermes/tools/node-26.12.1-darwin-arm64/bin/node
+
+exec
+/bin/zsh -lc 'node --input-type=module --check < webapp/js/app.js; python -m unittest discover -s tests > /tmp/honest-convergence-unittest.log 2>&1; cat /tmp/honest-convergence-unittest.log' in /Users/paoaiyong/.hermes/cache/scratch/undermind-repo
+ succeeded in 1029ms:
+..../Users/paoaiyong/.hermes/installs/88d29d1df47a658d/environments/0267a5db45764b189882ac2eee6202d4/venv/lib/python3.14/site-packages/pydantic_core/core_schema.py:4350: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105828310>
+  return {k: v for k, v in kwargs.items() if v is not None}
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/installs/88d29d1df47a658d/environments/0267a5db45764b189882ac2eee6202d4/venv/lib/python3.14/site-packages/pydantic_core/core_schema.py:4350: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105a4a020>
+  return {k: v for k, v in kwargs.items() if v is not None}
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/installs/88d29d1df47a658d/environments/0267a5db45764b189882ac2eee6202d4/venv/lib/python3.14/site-packages/pydantic_core/core_schema.py:4350: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105a73970>
+  return {k: v for k, v in kwargs.items() if v is not None}
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/installs/88d29d1df47a658d/environments/0267a5db45764b189882ac2eee6202d4/venv/lib/python3.14/site-packages/pydantic_core/core_schema.py:4350: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105b0e890>
+  return {k: v for k, v in kwargs.items() if v is not None}
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.................../Users/paoaiyong/.hermes/tools/python-3.14.9+20261021-darwin-arm64/lib/python3.14/json/encoder.py:254: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105b753f0>
+  _iterencode = c_make_encoder(
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/tools/python-3.14.9+20261021-darwin-arm64/lib/python3.14/json/encoder.py:254: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105b763e0>
+  _iterencode = c_make_encoder(
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/tools/python-3.14.9+20261021-darwin-arm64/lib/python3.14/json/encoder.py:254: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105b764d0>
+  _iterencode = c_make_encoder(
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+...............
+----------------------------------------------------------------------
+Ran 38 tests in 0.565s
+
+OK
+
+exec
+/bin/zsh -lc 'git diff --check; git status --short --branch' in /Users/paoaiyong/.hermes/cache/scratch/undermind-repo
+ succeeded in 0ms:
+## fix/honest-convergence
+ M dls/api.py
+ M dls/engine.py
+ M dls/models.py
+ M dls/store.py
+ M tests/test_api.py
+ M webapp/js/app.js
+?? codex_convergence.log
+?? codex_impl.log
+?? codex_review.log
+?? tests/test_convergence.py
+
+codex
+已在 `fix/honest-convergence` 完成修复：通道失败会记录完整 warnings、标记 degraded 并阻止假收敛；trace 不再恒返回收敛。持久化、API 和界面提示已同步。未动 main，未 commit，未创建 PR。
+
+改动文件：
+
+- `dls/engine.py`
+- `dls/models.py`
+- `dls/store.py`
+- `dls/api.py`
+- `webapp/js/app.js`
+- `tests/test_convergence.py`（新增离线回归测试）
+- `tests/test_api.py`
+
+`python -m unittest discover -s tests` 全部通过，结果原文末尾：
+
+```text
+----------------------------------------------------------------------
+Ran 38 tests in 0.565s
+
+OK
+```
+
+[完整测试输出原文](/tmp/honest-convergence-unittest.log)（含数据库连接未关闭的 ResourceWarning）。JS 语法检查和 `git diff --check` 均通过。
+tokens used
+41,299
+已在 `fix/honest-convergence` 完成修复：通道失败会记录完整 warnings、标记 degraded 并阻止假收敛；trace 不再恒返回收敛。持久化、API 和界面提示已同步。未动 main，未 commit，未创建 PR。
+
+改动文件：
+
+- `dls/engine.py`
+- `dls/models.py`
+- `dls/store.py`
+- `dls/api.py`
+- `webapp/js/app.js`
+- `tests/test_convergence.py`（新增离线回归测试）
+- `tests/test_api.py`
+
+`python -m unittest discover -s tests` 全部通过，结果原文末尾：
+
+```text
+----------------------------------------------------------------------
+Ran 38 tests in 0.565s
+
+OK
+```
+
+[完整测试输出原文](/tmp/honest-convergence-unittest.log)（含数据库连接未关闭的 ResourceWarning）。JS 语法检查和 `git diff --check` 均通过。

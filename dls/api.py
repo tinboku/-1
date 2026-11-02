@@ -283,12 +283,14 @@ def create_app(ctx=None) -> FastAPI:
             if search is None:
                 raise HTTPException(404, "search not found")
             papers = ctx.store.search_papers(search_id, included_only=included_only)
-        # Warnings are available for this server session; jobs are not persisted.
+        # Prefer live job diagnostics; retain stored diagnostics after a restart.
         related = [j for j in jobs.list() if j.kind in ("search", "trace")
                    and j.result and j.result.get("search_id") == search_id]
         result = related[0].result if related else {}
-        search["warnings"] = result.get("warnings", [])
-        search["degraded"] = result.get("degraded", bool(search["warnings"]))
+        search["warnings"] = result.get("warnings", search.get("warnings", []))
+        search["degraded"] = result.get("degraded", search.get("degraded", bool(search["warnings"])))
+        search["converged"] = result.get("converged", search.get("converged", False))
+        search["stop_reason"] = result.get("stop_reason")
         search["papers"] = [paper_dict(p) for p in papers]
         return search
 
@@ -319,7 +321,8 @@ def create_app(ctx=None) -> FastAPI:
                 "converged": outcome.converged,
                 "coverage": outcome.coverage,
                 "warnings": outcome.warnings,
-                "degraded": getattr(outcome, "degraded", bool(outcome.warnings)),
+                "degraded": outcome.degraded or bool(outcome.warnings),
+                "stop_reason": outcome.stop_reason,
             }
 
         job = jobs.submit("search", work)
@@ -340,8 +343,10 @@ def create_app(ctx=None) -> FastAPI:
                 "search_id": outcome.search_id,
                 "found": outcome.found,
                 "excluded": outcome.excluded_count,
+                "converged": outcome.converged,
                 "warnings": outcome.warnings,
-                "degraded": getattr(outcome, "degraded", bool(outcome.warnings)),
+                "degraded": outcome.degraded or bool(outcome.warnings),
+                "stop_reason": outcome.stop_reason,
             }
 
         job = jobs.submit("trace", work)

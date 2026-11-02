@@ -12,6 +12,7 @@ import time
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 try:
     from fastapi.testclient import TestClient
@@ -19,6 +20,7 @@ except ImportError:  # pragma: no cover
     raise unittest.SkipTest("fastapi not installed (pip install -e .[api])")
 
 from dls.api import create_app, paper_dict
+from dls.engine import DeepSearchEngine
 from dls.models import Paper, SearchOutcome
 from dls.store import Store
 
@@ -161,6 +163,28 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(detail["warnings"], [])
         self.assertFalse(detail["degraded"])
 
+    def test_stored_diagnostics_survive_without_session_job(self):
+        sid = self.ctx.store.create_search("default", "stored", [], {})
+        self.ctx.store.save_results(sid, [], set(), {}, None,
+                                    degraded=True, warnings=["source offline"], converged=False)
+        detail = self.client.get(f"/api/searches/{sid}").json()
+        self.assertEqual(detail["warnings"], ["source offline"])
+        self.assertTrue(detail["degraded"])
+        self.assertFalse(detail["converged"])
+
+    def test_stop_reason_reaches_job_and_search_detail(self):
+        run = self.ctx.engine.run
+        def stopped(*args, **kwargs):
+            outcome = run(*args, **kwargs)
+            outcome.stop_reason = "No new candidates after deduplication."
+            return outcome
+        self.ctx.engine.run = stopped
+        snap = self._search()
+        self.assertEqual(snap["status"], "done", snap)
+        self.assertEqual(snap["result"]["stop_reason"], "No new candidates after deduplication.")
+        detail = self.client.get(f"/api/searches/{snap['result']['search_id']}").json()
+        self.assertEqual(detail["stop_reason"], snap["result"]["stop_reason"])
+
     def test_paper_score_source_is_explicit_or_unknown(self):
         paper = _paper()
         self.assertIsNone(paper_dict(paper)["match_source"])
@@ -252,6 +276,40 @@ class ApiTest(unittest.TestCase):
             text = "".join(chunk for chunk in stream.iter_text())
         self.assertIn('"type": "progress"', text)
         self.assertIn('"type": "done"', text)
+
+    def test_degraded_search_and_trace_complete_with_diagnostics(self):
+        seed = _paper()
+        self.ctx.store.upsert_paper(seed)
+        s2 = Mock()
+        s2.search.return_value = [seed]
+        s2.citations.side_effect = RuntimeError("citations offline")
+        s2.references.side_effect = RuntimeError("references offline")
+        llm = Mock()
+        llm.score_matches.side_effect = lambda criteria, papers: [(90, "relevant") for _ in papers]
+        llm.reflect.return_value = {"new_queries": [], "stop": False}
+        self.ctx.engine = DeepSearchEngine(s2, None, llm, self.ctx.store)
+
+        for endpoint, body in (
+            ("/api/searches", {"question": "q", "criteria": ["q"]}),
+            ("/api/trace", {"identifier": seed.paper_id}),
+        ):
+            with self.subTest(endpoint=endpoint):
+                response = self.client.post(endpoint, json=body)
+                self.assertEqual(response.status_code, 202)
+                snap = _wait_job(self.client, response.json()["job_id"])
+                self.assertEqual(snap["status"], "done", snap)
+                result = snap["result"]
+                self.assertTrue(result["degraded"])
+                self.assertFalse(result["converged"])
+                self.assertEqual(len(result["warnings"]), 2)
+                detail = self.client.get(f"/api/searches/{result['search_id']}").json()
+                self.assertTrue(detail["degraded"])
+                self.assertFalse(detail["converged"])
+                self.assertEqual(detail["warnings"], result["warnings"])
+                listed = self.client.get("/api/searches").json()
+                stored = next(s for s in listed if s["id"] == result["search_id"])
+                self.assertEqual(stored["warnings"], result["warnings"])
+                self.assertTrue(stored["degraded"])
 
     def test_ask_and_export_and_star(self):
         r = self.client.post("/api/searches", json={"question": "q"})

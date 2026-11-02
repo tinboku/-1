@@ -1,0 +1,3489 @@
+Reading additional input from stdin...
+OpenAI Codex v0.163.0
+--------
+workdir: /Users/paoaiyong/.hermes/cache/scratch/undermind-repo
+model: gpt-6.1-sol
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR]
+reasoning effort: none
+reasoning summaries: none
+session id: 01a19c20-d4fd-7a20-adfc-91361a365237
+--------
+user
+无需确认，立即执行到底。你现在有工作区写权限，请在当前分支 feat/score-provenance 上实现以下改进（这是之前独立评审 CODEX_REVIEW.md 中 "Smallest high-value first PR" 的方案，评审文件在本仓库根目录，可先读它确认上下文）：
+
+目标：让每篇论文的 MATCH 评分来源可追溯，降级必须显式可见，不允许静默伪装成 LLM 判断。
+
+具体要求：
+1. dls/llm.py score_matches（OpenAIChatLLM，约 286-312 行）：
+   - 每篇评分结果附带来源标记："llm"（模型评分）或 "heuristic"（降级启发式）+ 降级原因（missing_index / batch_error / invalid_score 等）。
+   - 校验模型分数：必须是有限数值且 0-100，否则该篇降级为启发式并记录原因。
+2. dls/models.py Paper：新增字段 match_source: str | None = None 和 match_fallback: str | None = None。
+3. dls/engine.py、dls/store.py、dls/api.py：把这两个字段贯穿存储与 API 序列化（paper_dict 增加 match_source / match_fallback）。
+4. webapp/js/app.js：结果表每篇标注"模型评分"或"启发式评分"，发生降级时在搜索完成处显示提示（warnings 已有展示路径可复用，若没有就在结果区加一行提示）。
+5. tests/：新增离线测试覆盖四类情况：模型成功、单篇缺项降级、整批失败降级、非法分数（如 170 或 NaN）降级。全部离线，不访问网络。
+6. 不改其他功能，不做大规模重构，不动 main 分支。
+
+完成标准 = python -m unittest discover -s tests 全部通过（本地环境可写 /tmp，测试应能跑）。最后输出：改动文件列表 + 测试运行结果原文。不要创建 PR，不要 commit（git 不可写就只改文件）。
+codex
+我会先读评审和相关实现，再贯通评分来源、存储、API 和页面提示，补齐离线测试，最后运行完整测试。不会创建 PR 或提交。
+exec
+/bin/zsh -lc "pwd; git branch --show-current; rg --files -g 'AGENTS.md' -g 'CODEX_REVIEW.md' -g '*test*' -g 'llm.py' -g 'models.py' -g 'engine.py' -g 'store.py' -g 'api.py' -g 'app.js'" in /Users/paoaiyong/.hermes/cache/scratch/undermind-repo
+ succeeded in 0ms:
+/Users/paoaiyong/.hermes/cache/scratch/undermind-repo
+feat/score-provenance
+CODEX_REVIEW.md
+tests/test_api.py
+tests/test_scoring.py
+tests/test_llm.py
+tests/test_engine.py
+tests/test_library.py
+webapp/js/app.js
+dls/engine.py
+dls/api.py
+dls/llm.py
+dls/models.py
+dls/store.py
+
+exec
+/bin/zsh -lc 'git status --short; cat CODEX_REVIEW.md; cat dls/models.py; cat dls/llm.py' in /Users/paoaiyong/.hermes/cache/scratch/undermind-repo
+ succeeded in 0ms:
+?? CODEX_REVIEW.md
+?? codex_impl.log
+?? codex_review.log
+
+# deep-literature-search 独立代码评审
+
+评审日期：2026-11-02。
+
+已阅读 `README.md`、`docs/*.md`、全部 `dls/*.py`、`dls/clients/*.py`、`webapp/`、`tests/` 及 `pyproject.toml`。结论来自实际实现与离线探针；文档中的功能描述、在线测试记录均未当作实现证据。本次未调用外部论文 API，也未重新验证 Undermind 产品行为。
+
+严重度定义：
+
+- **P1 高**：可能造成错误筛选、虚假完整性判断、证据误导或关键交互失效。
+- **P2 中**：限制检索质量、可靠性、可追溯性或功能完整度。
+- **P3 低**：文档或展示层面的次要偏差。
+
+总体判断：这是一个具备真实检索、评分、引用扩展与报告生成能力的 MVP。它实现了**有上限、有限自适应的迭代管线**；尚未实现全文证据驱动、引用经过验证的自主研究代理。
+
+## 严重度排序
+
+| 严重度 | 主要问题 | 证据 |
+|---|---|---|
+| P1 | LLM 失败后静默使用启发式 MATCH，同一结果可能混用评分体系 | `dls/llm.py:286–312` |
+| P1 | 无全文读取和 claim 级引用核验，却显示“全文”计数并生成带引用报告 | `dls/models.py:36–38`；`dls/llm.py:336–354` |
+| P1 | 扩展失败被吞掉，可把数据源不可用判为搜索收敛 | `dls/engine.py:59–72, 252–266` |
+| P1 | 纯中文评分失效，不同纯中文标题可能被合并 | `dls/scoring.py:20–29, 97–119` |
+| P1 | 前端澄清答案没有参与“重新生成标准” | `webapp/js/app.js:313–339` |
+| P2 | 重复扩展固定 top 种子，没有已扩展记录，可能提前停在局部结果 | `dls/engine.py:244–275` |
+| P2 | 客户端重试不完整，跨来源 ID 没有可靠解析 | 三个客户端；`dls/engine.py:63–65` |
+| P2 | 覆盖率估计的样本口径与假设不足，展示可能过度确定 | `dls/engine.py:75–99, 280–295` |
+| P2 | 整次检索持有全局锁，普通数据请求会被长任务阻塞 | `dls/api.py:238–243, 294–303` |
+| P2 | 收藏回调在 `await` 后访问失效的 `event.currentTarget` | `webapp/js/app.js:170–175` |
+| P2 | 测试主要证明离线正常路径，核心失败路径与前端未覆盖 | `tests/*.py` |
+
+## 1. 搜索是否真正自主、迭代？在哪里停止？
+
+**结论：确实迭代，也有模型参与的策略调整；但自主程度有限，默认最多两轮扩展。不能称为完全装饰性的固定流程，也不能称为充分自主的研究代理。**
+
+实际流程：
+
+1. 初始查询为原问题加全部 criteria，去掉完全相同的字符串，逐条调用 S2。
+2. OpenAlex 只检索原问题一次。
+3. 配置了 Crossref 时，也检索原问题一次。
+4. 合并、评分，以默认 55 分筛选入选论文。
+5. 每轮反思，然后从累计入选论文中选最高分的 8 篇，获取引用和参考文献，再执行反思提出的新查询。
+
+证据：`dls/engine.py:185–195, 203–232, 244–260`。
+
+循环和停止逻辑明确位于 `dls/engine.py:244–276`：
+
+| 条件 | 行为 |
+|---|---|
+| `range(1, max_rounds + 1)` | 固定最大轮数，默认 2 |
+| 去重后没有新候选 | `converged=True`，立即停止 |
+| 反思返回 `stop` | 完成本轮检索、评分后停止 |
+| 新入选数 / 更新后的累计入选数 `< 0.03` | 判为收敛并停止 |
+| 达到轮数上限 | 退出循环；`converged` 可以仍为 `False` |
+
+CLI 默认也是两轮，API 请求默认两轮；前端没有提供轮数配置，因此通常使用默认值。证据：`dls/cli.py:289–290`、`dls/api.py:127–133`、`webapp/js/app.js:339`。
+
+**P2：没有已扩展种子集合，容易反复搜索同一局部。**
+
+每轮重新取累计入选集的 top 8；没有记录哪些种子已经扩展，也没有按未探索程度选种子。若排名没有变化，就重复拉取同样的引用邻居；新候选去重后为空时，可能停止，而低排名论文的引用尚未探索。证据：`dls/engine.py:248–265`。
+
+此外，客户端只取单页结果；引擎不会分页。所谓“没有新候选”，只代表这组受限请求没有返回未见论文。
+
+**P2：`trace()` 的收敛标志不可信。**
+
+`trace()` 是固定最多 `hops` 跳的图遍历；每跳最多取 5 篇相关论文继续扩展。返回值却总是 `converged=True`，`rounds=hops`，即使只是达到跳数上限，或实际提前退出。证据：`dls/engine.py:128–158, 178–179`。
+
+## 2. 三个论文客户端是否可靠？是否存在静默失败？
+
+**结论：S2/OpenAlex 有部分 HTTP 状态重试，Crossref 没有重试；整个管线可以继续运行，但降级状态并不总是可见，尤其会影响收敛判断。**
+
+### 客户端实际行为
+
+| 客户端 | 已实现 | 缺口 |
+|---|---|---|
+| Semantic Scholar | Session、30 秒超时；默认最多 4 次请求；对 429 和部分 5xx 指数退避；识别纯数字 `Retry-After` | 不重试连接异常、超时、JSON 解析错误；不支持日期形式 `Retry-After`；等待最多截为 30 秒；无正常请求节流、抖动或分页遍历 |
+| OpenAlex | Session、30 秒超时；默认最多 3 次请求；对 409/429/部分 5xx 指数退避 | 不读取 `Retry-After`；不重试网络异常或坏 JSON；无分页遍历 |
+| Crossref | Session、30 秒超时、User-Agent；DOI 查询 404 返回 `None` | 无重试、退避或 429 专门处理 |
+
+证据：`dls/clients/semantic_scholar.py:37–62, 89–122`；`dls/clients/openalex.py:24–52, 97–109`；`dls/clients/crossref.py:26–32, 67–80`。
+
+离线探针将 S2 请求模拟为 `requests.Timeout`，实际请求次数为 **1**；异常直接逃出重试循环。
+
+### P1：失败可以伪装成收敛
+
+初始搜索异常通常加入 warnings，属于已有的降级处理。证据：`dls/engine.py:205–222`。
+
+但主搜索中的：
+
+- 引用扩展 `_snowball()`：捕获所有异常后直接继续。
+- 反思查询：捕获所有异常后直接继续。
+- 后续没有新候选：直接 `converged=True`。
+
+证据：`dls/engine.py:63–67, 252–266`。
+
+因此，“引用服务全部失败”与“引用邻域已搜索完”可以产生同样的停止结果。
+
+离线探针模拟唯一数据源全失败，结果仍为：
+
+```text
+found=0
+converged=True
+rounds=1
+warnings=['Semantic Scholar search failed: down']
+```
+
+API 随后会把引擎正常返回作为成功任务处理，而不是区分搜索完整、部分完成和数据不可用。证据：`dls/api.py:98–104, 304–313`。
+
+### P2：跨来源种子 ID 不可靠
+
+`_snowball()` 将所有种子的 `paper_id` 原样传给 S2，包括 OpenAlex 的 `W...` ID。没有先通过 DOI 转换为 S2 可解析的标识。证据：`dls/engine.py:63–65`、`dls/clients/openalex.py:81–93`。
+
+`_resolve_seed()` 对已存的 `doi:` 论文尝试解析，但其他来源，包括 OpenAlex 论文，会直接返回。证据：`dls/api.py:203–215`。
+
+OpenAlex 虽然实现了 `work_id_for_doi()` 和 `citing()`，引擎并未调用它们；S2 扩展失败后不会改用 OpenAlex 图谱。证据：`dls/clients/openalex.py:101–109`、`dls/engine.py:59–72`。
+
+### P2：用户看不到完整降级信息
+
+API 搜索任务结果包含 warnings，但前端完成后只打开搜索，没有展示这些 warnings。搜索表也未持久化 warnings、反思记录或终止原因。证据：`dls/api.py:304–313`；`webapp/js/app.js:329–342`；`dls/store.py:40–48, 245–258`。
+
+更新检查同样吞掉查询异常并返回空列表，前端会显示“暂时没有新论文”。证据：`dls/updates.py:27–31`、`webapp/js/app.js:269–275`。
+
+## 3. MATCH 是否可信？有没有误导性的百分比？
+
+**结论：MATCH 可作为未经校准的筛选分，不能解释为相关概率、研究质量或可靠性百分比。最严重的问题是评分来源混用且不可追溯。**
+
+### P1：启发式结果可能被当作 LLM 判断
+
+LLM 评分每批 10 篇，仅提供标题及前 600 字符摘要。模型返回缺少某个索引时，该论文使用启发式分；整批发生异常时，整批降级为启发式评分。没有 warning，也没有单篇评分来源字段。证据：`dls/llm.py:286–312`。
+
+因此，同一次运行可以同时包含：
+
+- 真正的模型判断；
+- 缺项后的单篇启发式分；
+- 网络或解析失败后的整批启发式分。
+
+存储只有 `match` 和 `reason`，没有模型、实际后端、降级原因或输入证据范围。证据：`dls/models.py:26–30`、`dls/store.py:50–58`。
+
+前端健康信息显示配置的 LLM 类名，不代表每篇评分实际成功调用了模型。证据：`dls/api.py:251–259`、`webapp/js/app.js:375–380`。
+
+离线探针确认：`OpenAIChatLLM` 调用失败后仍返回 88 分，实例名称仍是 `openai-compatible`。
+
+### P2：没有校验模型分值
+
+模型分数只经过 `float()`，未校验是否有限、是否在 0–100 内，也未严格验证索引和重复项。证据：`dls/llm.py:303–309`。
+
+离线探针输入模型返回的 170 分，代码直接接受 `170.0`。
+
+### 启发式分实际含义
+
+公式是：
+
+```text
+MATCH = 100 × (
+    0.78 × 词法相关性
+  + 0.12 × 引用速度分量
+  + 0.10 × 新近程度分量
+)
+```
+
+证据：`dls/scoring.py:136–159`。
+
+多个 criteria 的相关性由“最高值占 75% + 平均值占 25%”组成。因此满足其中一条就可能获得高分；没有逐条验证纳入条件、排除条件或否定约束。证据：`dls/scoring.py:142–147`。
+
+年份默认硬编码为 2026。证据：`dls/scoring.py:136`、`dls/models.py:40`。
+
+### P1：中文支持存在直接的数据正确性问题
+
+分词和标题归一化只保留 ASCII 字母数字：
+
+- 纯中文 criteria 没有有效词，相关性为零。
+- 不同纯中文标题都可能归一化为空字符串。
+- `dedupe()` 会按空标题键匹配，将不同论文合并。
+
+证据：`dls/scoring.py:20–29, 109–119`。
+
+离线探针确认：
+
+- 完全匹配的中文标题、摘要和中文问题，仅得 10 分，来自年份分量。
+- “表格数据描述”和“量子纠错”两篇不同 ID 的论文被合成一篇。
+
+### 关于“百分比”的准确判断
+
+当前前端 MATCH 显示的是数字，**没有 `%` 符号**，不能指控它直接展示了“LLM 置信百分比”。证据：`webapp/js/app.js:149–154`、`webapp/index.html:55–58`。
+
+但它也没有说明分数来源及含义。文档则把 MATCH 称为百分比。证据：`docs/design.md:13`。
+
+真正显示百分比的是“覆盖估计”：
+
+- 使用 Chapman 捕获—再捕获公式。
+- 没有置信区间。
+- 两个学术索引是否独立、每篇被发现概率是否相同，没有验证。
+- S2 样本包含后续引用扩展，OpenAlex 只有初始搜索；不属于一致的采样过程。
+- 分子包含所有来源发现的相关论文，分母只按 S2/OpenAlex 集合估计。
+- 超过估计总量时直接截为 100%。
+
+证据：`dls/engine.py:75–99, 280–295`；展示：`webapp/js/app.js:197–202`。
+
+离线探针：S2 和 OpenAlex 都只有同样 3 篇，传入总发现数 12，得到“估计总量 3、已发现 12、覆盖率 100%”。界面虽标明“估计”，但这一百分比不足以证明检索完整性。
+
+## 4. 全文阅读、证据抽取、引用验证是否真的实现？
+
+**结论：摘要级处理真实存在；自动全文阅读和可核验证据链没有实现。PDF 导入有少量实际解析，不能简单称为完全空壳。**
+
+### P1：“有全文”的定义只是存在 PDF 地址
+
+`Paper.has_full_text` 直接返回：
+
+```python
+return bool(self.open_access_pdf)
+```
+
+证据：`dls/models.py:36–38`。
+
+它没有检查链接是否有效、是否能下载、是否确为 PDF、正文是否解析成功。引擎据此统计 `with_full_text`，前端显示“全文”。证据：`dls/engine.py:295–304`、`webapp/js/app.js:200–202`。
+
+### 实际输入范围
+
+| 功能 | 实际使用的正文信息 |
+|---|---|
+| LLM MATCH | 标题 + 摘要前 600 字符 |
+| LLM 报告 | 标题、年份 + 摘要前 800 字符 |
+| LLM 表格抽取 | 标题 + 摘要前 2000 字符 |
+| LLM 问答 | 最高分 15 篇，摘要前 700 字符 |
+| 启发式抽取 | 元数据、关键词分类、摘要句子匹配 |
+
+证据：`dls/llm.py:163–188, 292–294, 338–340, 356–367, 372–382`。
+
+没有自动下载 OA PDF、arXiv/PMC 全文、全文分块、章节检索或页码定位流程。核心数据模型和数据库也没有全文块、证据位置或 claim 支持关系。证据：`dls/models.py:9–30`、`dls/store.py:13–74`。
+
+### PDF 导入不是全文管线
+
+`import_pdf()` 会复制本地文件，并在安装了 `pypdf/PyPDF2` 时：
+
+1. 只读取第一页；
+2. 第一行作为标题；
+3. 第一页文本前 1500 字符塞入 `abstract`。
+
+解析失败会被吞掉，改用文件名元数据。证据：`dls/importers.py:83–115`。
+
+它没有把文档全文传给搜索或报告，也没有设置 `open_access_pdf`；因此实际导入的本地 PDF 反而可能不被计入“有全文”。
+
+### 引用图谱不等于引用验证
+
+引用和参考文献 API 用于发现邻居，不能证明报告中的一句话被某篇论文支持。没有 claim 拆分、支持片段、引用 KEY 校验或蕴含判断。`[KEY]` 只是生成和展示用的标识。
+
+## 5. 反思会改变下一轮策略，还是装饰？
+
+**结论：会实际改变查询与停止行为，不能称为纯装饰；但反思上下文和可控制动作非常有限。**
+
+LLM 反思输入只有 criteria 和前 10 篇入选论文的标题；返回最多两个新查询和一个停止标志。证据：`dls/llm.py:314–334`。
+
+引擎实际执行每条新查询，固定通过 S2 获取最多 20 篇，并标记来源为 `reflection query`。证据：`dls/engine.py:247–260`。
+
+启发式反思从已入选论文标题中挑出 criteria 没有的长词，拼为一个查询；第二轮起返回 `stop=True`。证据：`dls/llm.py:73–83`。
+
+**P2：缺少足以判断覆盖缺口的信息。**
+
+反思看不到：
+
+- 已执行的查询和失败记录；
+- 被排除论文及原因；
+- 每轮新增量；
+- 哪些 criteria 尚缺证据；
+- 已扩展的图节点和剩余 frontier。
+
+也不能决定改用哪个来源、分页、调整扩展深度或选择不同种子。`round_no` 虽传入方法，但在线反思 prompt 没有使用它。证据：`dls/llm.py:314–330`。
+
+引擎没有记录已执行过的反思查询；可能每轮重复搜索。反思的 `stop` 在扩展、评分之后才检查，因此不是立即停止指令。证据：`dls/engine.py:252–275`。
+
+实际能力更接近“基于当前标题生成补充查询”，尚未形成完整的策略规划与执行反馈循环。
+
+## 6. 报告是否建立在已验证的论文证据上？
+
+**结论：报告输入来自入选论文，具有基本来源约束；但没有经过证据验证。带 KEY 不等于论断正确。**
+
+`generate_report()` 从数据库读取该搜索入选论文，调用 `write_report()`，然后直接保存输出。没有后处理核验。证据：`dls/report.py:15–30`。
+
+### P1：只靠 prompt 约束引用真实性
+
+在线报告要求“只使用提供的论文”和按 KEY 引用，但没有验证：
+
+- 引用的 KEY 是否存在；
+- 引用论文是否真的支持该句；
+- 数字、比较和结论是否出现在输入摘要中；
+- 是否出现没有引用的事实性断言。
+
+证据：`dls/llm.py:336–354`、`dls/report.py:25–29`。
+
+前端对 KEY 的处理只是包成 `<span class="cite">`，没有论文跳转或证据定位。证据：`webapp/js/app.js:16–22`。
+
+### P2：报告生成缺失重要上下文
+
+在线 `write_report()` 虽接收 criteria，实际 prompt 没有把 criteria 传给模型，只传原问题、focus 和论文摘要。它还要求输出 Cit/yr 列，却没有把引用速度或引用数传入。证据：`dls/llm.py:336–351`。
+
+因此：
+
+- 用户修订的检索边界可能不反映在报告中；
+- 引用速度列没有输入依据，无法可靠生成。
+
+### 启发式报告的优点与边界
+
+启发式版本确实引用原有论文 KEY，按关键词分类，摘取摘要首句，并明确说明使用摘要及离线分数局限。证据：`dls/llm.py:110–159`。
+
+这比无来源自由生成更可追溯，但它没有验证论文方法、实验结果或证据质量；每个方法族正文最多列 6 篇。它也没有使用 `focus` 参数。
+
+数据库保存的是可继续补全的论文元数据和报告字符串，没有报告输入快照、模型版本或证据记录。证据：`dls/store.py:107–137, 289–302`。无法完整重建某次报告的实际生成依据。
+
+## 7. webapp 是否完整接通 FastAPI？
+
+**结论：路径层面基本接通，没有发现前端调用不存在的业务 API；交互层面存在明确缺陷，部分后端能力也没有 UI。**
+
+### 前端调用与后端对应
+
+`webapp/js/api.js:17–35, 39–62` 定义的请求都能在 `dls/api.py` 找到：
+
+| 前端使用的端点 | 后端证据 |
+|---|---|
+| `GET /api/health`、`POST /api/plan` | `251–268` |
+| `GET/POST /api/searches`、`GET /api/searches/{id}` | `271–316` |
+| `POST /api/trace` | `318–337` |
+| `POST /api/searches/{id}/report` | `340–351` |
+| `POST /api/searches/{id}/extract` | `353–371` |
+| `POST /api/searches/{id}/ask` | `373–380` |
+| `POST /api/searches/{id}/updates` | `382–393` |
+| `GET /api/searches/{id}/export` | `395–417` |
+| `GET /api/files`、`GET /api/files/{id}` | `420–431` |
+| `GET /api/papers`、`POST /api/papers/{id}/star` | `434–454` |
+| `POST /api/import/doi` | `464–470` |
+| `GET /api/jobs/{id}`、`GET /api/jobs/{id}/events` | `490–523` |
+
+### 后端存在、webapp 未调用的端点
+
+| 端点 | 后端位置 |
+|---|---|
+| `GET /api/papers/lookup` | `dls/api.py:440–446` |
+| `POST /api/papers/{db_id}/folder` | `dls/api.py:456–462` |
+| `POST /api/import/bibtex` | `dls/api.py:472–481` |
+| `GET /api/jobs` | `dls/api.py:484–488` |
+
+前端也没有提供 folder 筛选、查看全部排除论文、导出排除论文等已存在的参数入口。证据：`webapp/js/api.js:21, 28, 31`；后端参数见 `dls/api.py:277, 399, 435`。
+
+### P1：重新生成标准始终丢弃澄清答案
+
+按钮文字变为“按回答重新生成标准”，请求却始终是：
+
+```javascript
+api.plan(question, {})
+```
+
+随后还会重建答案输入框。证据：`webapp/js/app.js:313–325`。
+
+启动搜索时虽然收集 answers，但通常也传入了此前生成的非空 criteria；后端只在 criteria 为空时重新构建标准。`engine.run()` 则只是保存 answers，不据此修订标准。证据：`webapp/js/app.js:332–339`、`dls/api.py:289–303`、`dls/engine.py:197, 203`。
+
+用户可以回答澄清问题，界面也接受了答案，但答案通常不会影响检索。
+
+### P2：收藏更新后抛错
+
+收藏回调在等待请求后调用：
+
+```javascript
+e.currentTarget.classList.toggle(...)
+```
+
+证据：`webapp/js/app.js:170–175`。
+
+事件派发结束后 `currentTarget` 不再指向按钮，正常异步请求返回时会访问空值。后端收藏可能已经成功，界面状态却没有更新，并产生未处理异常。应在 `await` 前保存按钮引用。
+
+### P2：后台任务仍然阻塞普通页面请求
+
+API 将整个 `engine.run()` 包在共享锁内，而列表、详情、文件、健康以外的多种操作也需要这把锁。网络请求和模型调用期间锁一直持有。证据：`dls/api.py:238–243, 273–282, 294–303, 420–437`。
+
+后台线程和 SSE 确实存在；但启动长检索后，其他数据页面仍可能等待数分钟，两个长任务实际也被串行化。
+
+### P2：任务与界面恢复不完整
+
+- SSE 出错后只查询一次快照；任务若还在运行就报断连，不持续恢复。证据：`webapp/js/api.js:52–59`。
+- 页面重载后不会调用任务列表恢复正在运行的任务；JobManager 本身也只保存在内存。证据：`webapp/js/app.js:375–386`、`dls/api.py:87–115`。
+- 打开另一搜索时不会清空或关联右侧旧报告、旧表格，可能显示与当前搜索无关的内容。证据：`webapp/js/app.js:188–209`。
+- 更新完成只弹出篇数，不展示新论文，也没有读取更新列表的 API。证据：`webapp/js/app.js:269–275`、`dls/api.py:382–393`。
+
+### P2：安装后的前端资源可能缺失
+
+`pyproject.toml` 只声明 `dls` 和 `dls.clients` 包，没有包含仓库顶层的 `webapp/` 静态资源配置。后端只有目录存在时才挂载前端。证据：`pyproject.toml:22–23`、`dls/api.py:42, 525–527`。
+
+源码或 editable 安装的运行方式可以找到资源，普通 wheel 分发的 UI 完整性没有保证。
+
+另外，`dls serve` 使用独立的 stdlib 页面，`dls api` 才提供这里审查的 webapp，不能混为一个前端。证据：`dls/cli.py:259–270`。
+
+## 8. 测试实际覆盖什么？没有覆盖什么？
+
+**结论：共 23 个测试，主要验证正常路径、固定假数据和序列化。它们没有证明真实检索可靠性、模型评分质量、全文证据能力或浏览器交互完整性。**
+
+### 已覆盖内容
+
+| 文件 | 数量 | 实际覆盖 |
+|---|---:|---|
+| `tests/test_scoring.py` | 4 | KEY 基本生成、冲突后缀、按 DOI 合并、一个明显相关/无关案例的启发式排序 |
+| `tests/test_engine.py` | 3 | 假客户端主流程、引用来源持久化、一个覆盖率公式案例、跨来源重复候选、单跳 trace |
+| `tests/test_library.py` | 5 | 简单 BibTeX 解析、三种导出包含预期字符串、Store 基本存取和收藏 |
+| `tests/test_llm.py` | 5 | 两种后端选择、Gemini helper 输出解析、失败、重试后成功 |
+| `tests/test_api.py` | 6 | health、plan、假引擎搜索任务、完成后 SSE 回放、问答/导出/收藏、部分 404 |
+
+具体证据：`tests/test_scoring.py:19–63`；`tests/test_engine.py:41–54, 66–92, 109–129`；`tests/test_library.py:28–76`；`tests/test_llm.py:9–57`；`tests/test_api.py:98–157`。
+
+API 测试将真正的引擎换成 `fake_run()`，LLM 也是简单函数，trace 甚至设为 `None`。证据：`tests/test_api.py:47–78`。
+
+SSE 测试先等待任务完成才连接流，因此验证的是事件回放，没有验证长时间实时传输、断开重连或客户端取消。证据：`tests/test_api.py:126–133`。
+
+### 本次执行结果
+
+执行：
+
+```text
+python -B -m unittest discover -s tests -v
+```
+
+结果：
+
+- 发现 23 个测试；
+- 13 个通过；
+- 10 个在初始化阶段报错，原因是沙箱无法创建临时目录；
+- 这 10 个错误是环境限制，不能据此判定产品失败；
+- 本次也不能确认文档所述“23 个全部通过”。
+
+额外通过不写磁盘的离线探针，复现了：
+
+1. 模型失败后静默启发式降级；
+2. 接受 170 分；
+3. 中文词法评分失效；
+4. 不同纯中文标题被合并；
+5. 覆盖率被截为 100%；
+6. S2 超时仅请求一次；
+7. 唯一数据源失败后仍返回 `converged=True`。
+
+### 关键未测试范围
+
+**P1：正确性与失效语义**
+
+- 三个真实客户端的 HTTP 映射、429、`Retry-After`、超时、坏 JSON 和分页。
+- 所有来源失败与空结果的区分。
+- 引用扩展失败后是否错误收敛。
+- LLM 缺项、非法分数、混合降级及来源追踪。
+- 中文及其他非 ASCII 标题的去重和筛选。
+- 生成报告中的 KEY 有效性、论断支持关系和数值真实性。
+
+**P2：策略与产品行为**
+
+- 反思新查询确实能发现不同论文，以及改变停止行为。
+- 已探索种子的重复扩展、多跳 trace 和轮数上限语义。
+- 报告生成、抽取流程、更新检查、PDF 和 DOI 导入的完整路径。
+- API 的 trace/report/extract/updates/import 等任务及错误路径。
+- 前端按钮、澄清答案、收藏、搜索切换、SSE 恢复。
+- 长任务锁竞争、服务重启后的恢复。
+- wheel 中的静态资源。
+- 人工标注文献集上的 precision、recall、评分校准或引用准确率。
+
+没有基准评测，当前测试数量不能用来证明“深搜质量接近 Undermind”。
+
+## Gaps vs Undermind
+
+以下只将仓库行为规格当作对照目标，不把其黑盒记录视为已独立验证的产品事实。
+
+1. **全文与证据链缺失。** 当前以摘要为主，没有正文块、页码和 claim—证据关系；“全文”只是 PDF 链接存在。证据：`dls/models.py:36–38`、`dls/llm.py:338–340, 356–382`。
+2. **自主搜索深度有限。** 默认两轮、固定 top 种子和单页请求；反思只基于标题生成查询，没有完整探索状态或失败感知。证据：`dls/engine.py:192–193, 244–275`。
+3. **相关性与完整性缺少可信评估。** MATCH 会混用静默降级分，覆盖率没有充分采样依据，也没有真实质量基准。证据：`dls/llm.py:286–312`、`dls/engine.py:75–99`。
+4. **引用只是标识，尚非可核验证据入口。** 报告没有引用核查，前端 KEY 不能定位论文或支持片段；报告写作前也没有实现规格中的澄清流程。证据：`dls/report.py:25–29`、`webapp/js/app.js:16–22, 236–245`。
+5. **工作区与持续监控不完整。** webapp 无文件夹操作、任务恢复和更新结果列表；更新依赖手动触发，没有默认定期检查机制。证据：`webapp/js/api.js:17–35`、`dls/updates.py:13–42`、`dls/api.py:382–393`。
+
+## Smallest high-value first PR
+
+**建议只做一件事：让每篇 MATCH 的真实评分来源可追溯，并明确显示降级。**
+
+范围应保持集中：
+
+- 为评分结果增加实际方法、模型和降级原因。
+- 模型缺项或调用失败时记录 fallback；校验分值为有限的 0–100。
+- 将这些信息持久化并通过 API 返回。
+- 前端逐篇标注“模型评分”或“启发式评分”，提示本次是否发生降级。
+- 增加模型成功、部分缺项、整批失败、非法分数四类离线测试。
+
+入口为 `dls/llm.py:286–312`，经 `dls/engine.py:52–57`、Store 和 API 传到结果表。这个 PR 无需引入新检索服务或全文基础设施，就能消除当前最直接的评分来源误导，并为后续质量评测提供可靠数据。
+"""Core data types shared across clients, the engine and the store."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+
+@dataclass
+class Paper:
+    paper_id: str  # canonical id: S2 id, "W..." OpenAlex id, or "doi:..."
+    title: str
+    abstract: str | None = None
+    year: int | None = None
+    authors: list[str] = field(default_factory=list)
+    venue: str | None = None
+    citation_count: int = 0
+    reference_count: int = 0
+    doi: str | None = None
+    arxiv_id: str | None = None
+    open_access_pdf: str | None = None
+    url: str | None = None
+    tldr: str | None = None
+    source: str = "semantic_scholar"
+    sources: list[str] = field(default_factory=list)  # every channel that found it
+
+    # Filled in by scoring / storage layers
+    key: str | None = None        # citation key, e.g. "Zha25"
+    match: float | None = None    # 0..100 relevance to a search's criteria
+    match_reason: str | None = None
+    found_via: str | None = None  # provenance: "search", "citations of [Key]", ...
+
+    def __post_init__(self) -> None:
+        if self.source and self.source not in self.sources:
+            self.sources.append(self.source)
+
+    @property
+    def has_full_text(self) -> bool:
+        return bool(self.open_access_pdf)
+
+    def citations_per_year(self, current_year: int = 2026) -> float:
+        if not self.year:
+            return float(self.citation_count)
+        age = max(1, current_year - self.year + 1)
+        return self.citation_count / age
+
+    def first_author_surname(self) -> str:
+        if not self.authors:
+            return "Anon"
+        name = self.authors[0].strip()
+        if not name:
+            return "Anon"
+        # "First Last" -> "Last"; keep only letters for a compact key.
+        last = name.split()[-1]
+        cleaned = "".join(ch for ch in last if ch.isalpha())
+        return cleaned or "Anon"
+
+
+@dataclass
+class SearchOutcome:
+    search_id: int
+    question: str
+    criteria: list[str]
+    included: list[Paper]
+    excluded_count: int
+    with_full_text: int
+    rounds: int
+    converged: bool
+    coverage: dict | None  # discovery-curve estimate, see engine.estimate_coverage
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def found(self) -> int:
+        return len(self.included)
+"""Pluggable LLM backends.
+
+Two implementations of the same interface:
+
+- ``OpenAIChatLLM``: any OpenAI-compatible chat endpoint (set LLM_API_KEY,
+  LLM_BASE_URL, LLM_MODEL). Used for brainstorming, criteria writing,
+  MATCH judging, report writing, table extraction and follow-up Q&A.
+- ``GeminiConnectorLLM``: Gemini through the registered custom.gemini
+  connector (set DLS_LLM_BACKEND=gemini-connector). The API key lives in
+  the connector's secure storage and is never present in this process;
+  each call goes through the connector helper, which attaches a
+  surrogate credential that is swapped for the real key on egress.
+- ``HeuristicLLM``: deterministic offline fallback (lexical scoring,
+  extractive report assembly). Lets the whole pipeline run — and be
+  tested — with no API key at all.
+
+Every method degrades to the heuristic behavior on API errors, so a flaky
+endpoint never kills a search run.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import sys
+import time
+
+import requests
+
+from .config import Config
+from .models import Paper
+from .scoring import content_tokens, heuristic_match
+
+
+# ---------------------------------------------------------------------------
+# Heuristic backend
+# ---------------------------------------------------------------------------
+
+class HeuristicLLM:
+    name = "heuristic"
+
+    # -- brainstorming ----------------------------------------------------
+    def brainstorm(self, question: str) -> list[str]:
+        return [
+            "Scope: should the search focus narrowly on the core approach named in "
+            "your question, or also include earlier and adjacent approaches as "
+            "comparison points?",
+            "Purpose: is the goal mainly discovery and cataloguing of what exists, "
+            "or should evaluation of quality and usefulness be a priority as well?",
+        ]
+
+    # -- criteria -----------------------------------------------------------
+    def make_criteria(self, question: str, answers: dict[str, str] | None = None) -> list[str]:
+        criteria = [question.strip()]
+        focus_terms: list[str] = []
+        if answers:
+            joined_answers = " ".join(answers.values())
+            focus_terms = [t for t in content_tokens(joined_answers) if len(t) > 4][:6]
+        if focus_terms:
+            criteria.append(question.strip() + " — focus: " + ", ".join(focus_terms))
+        # A third, term-based criterion built from the question's content words.
+        terms = [t for t in content_tokens(question) if len(t) > 4][:8]
+        if terms:
+            criteria.append("Papers about: " + " ".join(terms))
+        return criteria
+
+    # -- scoring ------------------------------------------------------------
+    def score_matches(self, criteria: list[str], papers: list[Paper]) -> list[tuple[float, str]]:
+        return [heuristic_match(criteria, p) for p in papers]
+
+    # -- reflection (adapting stage) -----------------------------------------
+    def reflect(self, criteria: list[str], top_papers: list[Paper], round_no: int) -> dict:
+        seen = content_tokens(" ".join(criteria))
+        fresh: list[str] = []
+        for p in top_papers:
+            for t in content_tokens(p.title):
+                if t not in seen and len(t) > 4 and t not in fresh:
+                    fresh.append(t)
+        new_queries = []
+        if fresh:
+            new_queries.append(" ".join(fresh[:6]))
+        return {"new_queries": new_queries, "stop": round_no >= 2}
+
+    # -- report ---------------------------------------------------------------
+    _FAMILY_KEYWORDS = [
+        ("LLM / generative methods", ["llm", "language model", "generative", "gpt", "prompt"]),
+        ("Profiling-driven methods", ["profiling", "profile", "statistics", "schema"]),
+        ("Retrieval & embedding methods", ["retrieval", "embedding", "semantic search", "indexing"]),
+        ("Template / rule-based methods", ["template", "rule", "ontology", "knowledge graph"]),
+        ("Evaluation & benchmarking", ["evaluation", "benchmark", "quality", "assessment"]),
+    ]
+
+    def _family(self, paper: Paper) -> str:
+        text = (paper.title + " " + (paper.abstract or "")).lower()
+        best, best_hits = "Other approaches", 0
+        for name, kws in self._FAMILY_KEYWORDS:
+            hits = sum(1 for k in kws if k in text)
+            if hits > best_hits:
+                best, best_hits = name, hits
+        return best
+
+    @staticmethod
+    def _first_sentence(text: str | None) -> str:
+        if not text:
+            return ""
+        parts = re.split(r"(?<=[.!?])\s+", text.strip())
+        return parts[0] if parts else ""
+
+    def write_report(self, question: str, criteria: list[str], papers: list[Paper], focus: str | None = None) -> str:
+        papers = sorted(papers, key=lambda p: (p.match or 0), reverse=True)
+        lines: list[str] = []
+        lines.append(f"# Literature search report")
+        lines.append("")
+        lines.append(f"**Research question.** {question}")
+        lines.append("")
+        lines.append("**Search criteria.**")
+        for c in criteria:
+            lines.append(f"- {c}")
+        lines.append("")
+        lines.append("## Executive summary")
+        lines.append("")
+        lines.append(
+            f"This search retained {len(papers)} papers after relevance scoring and "
+            f"citation snowballing. The strongest matches are "
+            + ", ".join(f"[{p.key}]" for p in papers[:5])
+            + ". The sections below group the retained papers by method family and "
+            "summarize what each contributes, using the papers' own abstracts."
+        )
+        lines.append("")
+        families: dict[str, list[Paper]] = {}
+        for p in papers:
+            families.setdefault(self._family(p), []).append(p)
+        lines.append("## Method families")
+        for fam, members in sorted(families.items(), key=lambda kv: -len(kv[1])):
+            lines.append("")
+            lines.append(f"### {fam}")
+            lines.append("")
+            for p in members[:6]:
+                sentence = self._first_sentence(p.abstract) or (p.tldr or "")
+                lines.append(f"- [{p.key}] {p.title} ({p.year or 'n.d.'}). {sentence}")
+        lines.append("")
+        lines.append("## Evaluation and limitations")
+        lines.append("")
+        lines.append(
+            "Scores (MATCH) combine lexical relevance to the criteria with citation "
+            "velocity and recency in offline mode; treat the ordering as a screening "
+            "aid, not a quality judgement. Papers without abstracts could only be "
+            "scored on titles, and citation counts favour older work."
+        )
+        lines.append("")
+        lines.append("## References")
+        lines.append("")
+        lines.append("| KEY | Year | Cit/yr | Found via | Title |")
+        lines.append("|---|---|---|---|---|")
+        for p in papers:
+            cpy = p.citations_per_year()
+            lines.append(f"| {p.key} | {p.year or ''} | {cpy:.1f} | {p.found_via or 'search'} | {p.title} |")
+        lines.append("")
+        return "\n".join(lines)
+
+    # -- table extraction ------------------------------------------------------
+    def extract_row(self, paper: Paper, columns: list[str]) -> dict[str, str]:
+        row: dict[str, str] = {}
+        abstract = paper.abstract or ""
+        for col in columns:
+            c = col.lower()
+            if "paper" in c or "title" in c:
+                row[col] = f"[{paper.key}] {paper.title}"
+            elif "year" in c:
+                row[col] = str(paper.year or "")
+            elif "author" in c:
+                row[col] = ", ".join(paper.authors[:3])
+            elif "venue" in c:
+                row[col] = paper.venue or ""
+            elif "citation" in c:
+                row[col] = str(paper.citation_count)
+            elif "method" in c or "approach" in c:
+                row[col] = self._family(paper)
+            else:
+                # Find the abstract sentence mentioning the column's key term.
+                term = c.split()[0] if c.split() else c
+                sentence = next(
+                    (s for s in re.split(r"(?<=[.!?])\s+", abstract) if term in s.lower()),
+                    "",
+                )
+                row[col] = sentence[:200] if sentence else "—"
+        return row
+
+    # -- follow-up Q&A -----------------------------------------------------------
+    def answer(self, question: str, papers: list[Paper]) -> str:
+        ranked = sorted(papers, key=lambda p: (p.match or 0), reverse=True)[:5]
+        bits = [f"Based on the {len(papers)} papers in this search, the most relevant sources are:"]
+        for p in ranked:
+            sentence = self._first_sentence(p.abstract) or (p.tldr or "")
+            bits.append(f"- [{p.key}] {p.title}: {sentence}")
+        bits.append("(Offline mode: connect an LLM via LLM_API_KEY for a synthesized answer.)")
+        return "\n".join(bits)
+
+
+# ---------------------------------------------------------------------------
+# OpenAI-compatible backend
+# ---------------------------------------------------------------------------
+
+class OpenAIChatLLM(HeuristicLLM):
+    name = "openai-compatible"
+
+    def __init__(self, config: Config):
+        self.config = config
+        self.session = requests.Session()
+        self.session.headers.update(
+            {
+                "Authorization": f"Bearer {config.llm_api_key}",
+                "Content-Type": "application/json",
+            }
+        )
+
+    def _chat(self, system: str, user: str, json_mode: bool = False) -> str:
+        body: dict = {
+            "model": self.config.llm_model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0.2,
+        }
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
+        resp = self.session.post(
+            f"{self.config.llm_base_url.rstrip('/')}/chat/completions",
+            json=body,
+            timeout=120,
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
+
+    @staticmethod
+    def _parse_json(text: str) -> dict | list | None:
+        text = text.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```[a-z]*\n?|```$", "", text, flags=re.M).strip()
+        try:
+            return json.loads(text)
+        except Exception:
+            m = re.search(r"(\{.*\}|\[.*\])", text, flags=re.S)
+            if m:
+                try:
+                    return json.loads(m.group(1))
+                except Exception:
+                    return None
+            return None
+
+    def brainstorm(self, question: str) -> list[str]:
+        try:
+            out = self._chat(
+                "You are a research librarian. Before searching, ask exactly two short "
+                "clarifying questions that pin down scope and purpose. Return JSON: "
+                '{"questions": ["...", "..."]}',
+                f"Research question: {question}",
+                json_mode=True,
+            )
+            data = self._parse_json(out)
+            if isinstance(data, dict) and data.get("questions"):
+                return [str(q) for q in data["questions"]][:3]
+        except Exception:
+            pass
+        return super().brainstorm(question)
+
+    def make_criteria(self, question: str, answers: dict[str, str] | None = None) -> list[str]:
+        try:
+            answers_txt = "\n".join(f"- {k}: {v}" for k, v in (answers or {}).items()) or "(no answers)"
+            out = self._chat(
+                "You convert a research question into 2-4 natural-language search "
+                "criteria statements that a literature search engine will execute. "
+                'Return JSON: {"criteria": ["...", "..."]}',
+                f"Question: {question}\nClarifying answers:\n{answers_txt}",
+                json_mode=True,
+            )
+            data = self._parse_json(out)
+            if isinstance(data, dict) and data.get("criteria"):
+                return [str(c) for c in data["criteria"]][:4]
+        except Exception:
+            pass
+        return super().make_criteria(question, answers)
+
+    def score_matches(self, criteria: list[str], papers: list[Paper]) -> list[tuple[float, str]]:
+        results: list[tuple[float, str]] = []
+        batch_size = 10
+        for i in range(0, len(papers), batch_size):
+            batch = papers[i : i + batch_size]
+            try:
+                listing = "\n".join(
+                    f"{j}. TITLE: {p.title}\n   ABSTRACT: {(p.abstract or '')[:600]}"
+                    for j, p in enumerate(batch)
+                )
+                out = self._chat(
+                    "You judge how well each paper matches the search criteria. "
+                    "Score 0-100 (100 = directly on-topic). Return JSON: "
+                    '{"scores": [{"index": 0, "score": 87, "reason": "short reason"}]}',
+                    f"Criteria:\n- " + "\n- ".join(criteria) + f"\n\nPapers:\n{listing}",
+                    json_mode=True,
+                )
+                data = self._parse_json(out)
+                by_index: dict[int, tuple[float, str]] = {}
+                if isinstance(data, dict):
+                    for s in data.get("scores") or []:
+                        by_index[int(s["index"])] = (float(s["score"]), str(s.get("reason", "")))
+                for j, p in enumerate(batch):
+                    results.append(by_index.get(j) or heuristic_match(criteria, p))
+            except Exception:
+                results.extend(heuristic_match(criteria, p) for p in batch)
+        return results
+
+    def reflect(self, criteria: list[str], top_papers: list[Paper], round_no: int) -> dict:
+        try:
+            titles = "\n".join(f"- {p.title}" for p in top_papers[:10])
+            out = self._chat(
+                    "You are reflecting on a literature search in progress. Given the "
+                    "criteria and the best papers so far, propose up to 2 new search "
+                    "queries that would find relevant papers the criteria miss, and say "
+                    "whether the search looks saturated. Return JSON: "
+                    '{"new_queries": ["..."], "stop": false}',
+                "Criteria:\n- " + "\n- ".join(criteria) + f"\n\nBest papers so far:\n{titles}",
+                json_mode=True,
+            )
+            data = self._parse_json(out)
+            if isinstance(data, dict):
+                return {
+                    "new_queries": [str(q) for q in data.get("new_queries") or []][:2],
+                    "stop": bool(data.get("stop")),
+                }
+        except Exception:
+            pass
+        return super().reflect(criteria, top_papers, round_no)
+
+    def write_report(self, question: str, criteria: list[str], papers: list[Paper], focus: str | None = None) -> str:
+        try:
+            listing = "\n".join(
+                f"[{p.key}] {p.title} ({p.year or 'n.d.'}) — {(p.abstract or '')[:800]}"
+                for p in papers
+            )
+            focus_txt = f"\nReport focus requested by the user: {focus}" if focus else ""
+            return self._chat(
+                "You write structured literature-search reports in Markdown. Use ONLY "
+                "the papers provided, cite them inline with their [KEY] tokens, group "
+                "methods into families, include sections: Executive summary; What "
+                "counts as in-scope; Inputs and evidence used; Output types and method "
+                "families; How quality is evaluated; Reliability and limits; Practical "
+                "synthesis; Bottom line. End with a references table (KEY | Year | "
+                "Cit/yr | Title).",
+                f"Research question: {question}{focus_txt}\n\nPapers:\n{listing}",
+            )
+        except Exception:
+            return super().write_report(question, criteria, papers, focus)
+
+    def extract_row(self, paper: Paper, columns: list[str]) -> dict[str, str]:
+        try:
+            out = self._chat(
+                "Extract values for the requested columns from the paper's title and "
+                "abstract. If a value is not stated, use '—'. Return JSON with exactly "
+                "the requested column names as keys.",
+                f"Columns: {columns}\nTitle: {paper.title}\nAbstract: {(paper.abstract or '')[:2000]}",
+                json_mode=True,
+            )
+            data = self._parse_json(out)
+            if isinstance(data, dict):
+                return {c: str(data.get(c, "—")) for c in columns}
+        except Exception:
+            pass
+        return super().extract_row(paper, columns)
+
+    def answer(self, question: str, papers: list[Paper]) -> str:
+        try:
+            listing = "\n".join(
+                f"[{p.key}] {p.title} ({p.year or 'n.d.'}) — {(p.abstract or '')[:700]}"
+                for p in sorted(papers, key=lambda x: (x.match or 0), reverse=True)[:15]
+            )
+            return self._chat(
+                "Answer the user's follow-up question using ONLY the papers provided. "
+                "Cite papers inline with their [KEY] tokens. If the papers do not "
+                "cover the question, say so.",
+                f"Question: {question}\n\nPapers:\n{listing}",
+            )
+        except Exception:
+            return super().answer(question, papers)
+
+
+# ---------------------------------------------------------------------------
+# Gemini via the custom.gemini connector (credential stays in the vault)
+# ---------------------------------------------------------------------------
+
+class GeminiConnectorLLM(OpenAIChatLLM):
+    """OpenAI-shaped calls to Gemini, executed by the connector helper.
+
+    The helper (custom.gemini/bin/gemini.py) attaches an ``hsurr:``
+    surrogate to each request; the real API key is swapped in by the
+    runtime on egress to generativelanguage.googleapis.com. This class
+    therefore never sees a credential. All prompting, batching and
+    fallbacks are inherited from OpenAIChatLLM; only the transport
+    differs.
+    """
+
+    name = "gemini-connector"
+
+    def __init__(self, config: Config):
+        self.config = config
+        self.session = None  # transport is the helper subprocess, not requests
+
+    def _chat(self, system: str, user: str, json_mode: bool = False) -> str:
+        body: dict = {
+            "model": self.config.llm_model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0.2,
+        }
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
+        # The egress path to Google intermittently stalls (observed reads
+        # hanging past 180s). Retry a few times before giving up; callers
+        # degrade to the heuristic backend only after every attempt fails.
+        last_error: Exception | None = None
+        for attempt, pause in enumerate((0, 5, 15)):
+            if pause:
+                time.sleep(pause)
+            try:
+                proc = subprocess.run(
+                    [sys.executable, str(self.config.gemini_helper), "chat"],
+                    input=json.dumps(body),
+                    capture_output=True,
+                    text=True,
+                    timeout=150,
+                )
+                if proc.returncode != 0:
+                    raise RuntimeError(f"gemini helper failed: {proc.stderr.strip()[-400:]}")
+                data = json.loads(proc.stdout)
+                return data["choices"][0]["message"]["content"]
+            except Exception as exc:  # timeout, helper error, bad payload
+                last_error = exc
+        raise RuntimeError(f"gemini connector failed after retries: {last_error}")
+
+
+def get_llm(config: Config) -> HeuristicLLM:
+    if config.llm_backend == "gemini-connector":
+        return GeminiConnectorLLM(config)
+    if config.llm_backend == "heuristic":
+        return HeuristicLLM()
+    if config.llm_api_key:
+        return OpenAIChatLLM(config)
+    return HeuristicLLM()
+
+exec
+/bin/zsh -lc 'cat dls/models.py; cat dls/store.py; cat dls/engine.py' in /Users/paoaiyong/.hermes/cache/scratch/undermind-repo
+ succeeded in 0ms:
+"""Core data types shared across clients, the engine and the store."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+
+@dataclass
+class Paper:
+    paper_id: str  # canonical id: S2 id, "W..." OpenAlex id, or "doi:..."
+    title: str
+    abstract: str | None = None
+    year: int | None = None
+    authors: list[str] = field(default_factory=list)
+    venue: str | None = None
+    citation_count: int = 0
+    reference_count: int = 0
+    doi: str | None = None
+    arxiv_id: str | None = None
+    open_access_pdf: str | None = None
+    url: str | None = None
+    tldr: str | None = None
+    source: str = "semantic_scholar"
+    sources: list[str] = field(default_factory=list)  # every channel that found it
+
+    # Filled in by scoring / storage layers
+    key: str | None = None        # citation key, e.g. "Zha25"
+    match: float | None = None    # 0..100 relevance to a search's criteria
+    match_reason: str | None = None
+    found_via: str | None = None  # provenance: "search", "citations of [Key]", ...
+
+    def __post_init__(self) -> None:
+        if self.source and self.source not in self.sources:
+            self.sources.append(self.source)
+
+    @property
+    def has_full_text(self) -> bool:
+        return bool(self.open_access_pdf)
+
+    def citations_per_year(self, current_year: int = 2026) -> float:
+        if not self.year:
+            return float(self.citation_count)
+        age = max(1, current_year - self.year + 1)
+        return self.citation_count / age
+
+    def first_author_surname(self) -> str:
+        if not self.authors:
+            return "Anon"
+        name = self.authors[0].strip()
+        if not name:
+            return "Anon"
+        # "First Last" -> "Last"; keep only letters for a compact key.
+        last = name.split()[-1]
+        cleaned = "".join(ch for ch in last if ch.isalpha())
+        return cleaned or "Anon"
+
+
+@dataclass
+class SearchOutcome:
+    search_id: int
+    question: str
+    criteria: list[str]
+    included: list[Paper]
+    excluded_count: int
+    with_full_text: int
+    rounds: int
+    converged: bool
+    coverage: dict | None  # discovery-curve estimate, see engine.estimate_coverage
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def found(self) -> int:
+        return len(self.included)
+"""SQLite-backed project library: papers, searches, reports, updates."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import time
+from pathlib import Path
+
+from .models import Paper
+from .scoring import make_key
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS projects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL,
+    created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS papers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    paper_uid TEXT UNIQUE NOT NULL,
+    key TEXT UNIQUE,
+    title TEXT NOT NULL,
+    abstract TEXT,
+    year INTEGER,
+    authors TEXT NOT NULL DEFAULT '[]',
+    venue TEXT,
+    citation_count INTEGER NOT NULL DEFAULT 0,
+    reference_count INTEGER NOT NULL DEFAULT 0,
+    doi TEXT,
+    arxiv_id TEXT,
+    oa_pdf TEXT,
+    url TEXT,
+    tldr TEXT,
+    source TEXT,
+    starred INTEGER NOT NULL DEFAULT 0,
+    folder TEXT,
+    created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS searches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id),
+    question TEXT NOT NULL,
+    criteria TEXT NOT NULL DEFAULT '[]',
+    answers TEXT NOT NULL DEFAULT '{}',
+    counts TEXT NOT NULL DEFAULT '{}',
+    coverage TEXT,
+    created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS search_results (
+    search_id INTEGER NOT NULL REFERENCES searches(id),
+    paper_id INTEGER NOT NULL REFERENCES papers(id),
+    match REAL,
+    reason TEXT,
+    included INTEGER NOT NULL DEFAULT 0,
+    rank INTEGER,
+    PRIMARY KEY (search_id, paper_id)
+);
+CREATE TABLE IF NOT EXISTS files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id),
+    kind TEXT NOT NULL,
+    name TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS updates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    search_id INTEGER NOT NULL REFERENCES searches(id),
+    paper_id INTEGER NOT NULL REFERENCES papers(id),
+    found_at REAL NOT NULL,
+    seen INTEGER NOT NULL DEFAULT 0
+);
+"""
+
+
+class Store:
+    def __init__(self, db_path: Path):
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        # check_same_thread=False: the web UI serves requests from worker
+        # threads. SQLite itself serializes writers; our transactions are
+        # short, which is fine for this local single-user store.
+        self.conn = sqlite3.connect(str(db_path), check_same_thread=False, timeout=30)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript(SCHEMA)
+        # Migration: provenance column on search_results (added after v0.1).
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(search_results)")}
+        if "provenance" not in cols:
+            self.conn.execute("ALTER TABLE search_results ADD COLUMN provenance TEXT")
+        self.conn.commit()
+
+    # -- projects ---------------------------------------------------------
+    def project_id(self, name: str = "default") -> int:
+        row = self.conn.execute("SELECT id FROM projects WHERE name = ?", (name,)).fetchone()
+        if row:
+            return int(row["id"])
+        cur = self.conn.execute(
+            "INSERT INTO projects (name, created_at) VALUES (?, ?)", (name, time.time())
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    # -- papers -------------------------------------------------------------
+    def _taken_keys(self) -> set[str]:
+        return {r["key"] for r in self.conn.execute("SELECT key FROM papers WHERE key IS NOT NULL")}
+
+    def upsert_paper(self, paper: Paper) -> int:
+        """Insert or enrich a paper; assigns a citation KEY on first insert."""
+        row = self.conn.execute(
+            "SELECT id FROM papers WHERE paper_uid = ?", (paper.paper_id,)
+        ).fetchone()
+        if row is None and paper.doi:
+            row = self.conn.execute(
+                "SELECT id FROM papers WHERE doi = ?", (paper.doi,)
+            ).fetchone()
+        if row is not None:
+            pid = int(row["id"])
+            # Enrich missing fields only.
+            cur = self.conn.execute("SELECT * FROM papers WHERE id = ?", (pid,)).fetchone()
+            if not paper.key and cur["key"]:
+                paper.key = cur["key"]
+            updates: dict[str, object] = {}
+            if not cur["abstract"] and paper.abstract:
+                updates["abstract"] = paper.abstract
+            if not cur["oa_pdf"] and paper.open_access_pdf:
+                updates["oa_pdf"] = paper.open_access_pdf
+            if not cur["tldr"] and paper.tldr:
+                updates["tldr"] = paper.tldr
+            if paper.citation_count > (cur["citation_count"] or 0):
+                updates["citation_count"] = paper.citation_count
+            if updates:
+                sets = ", ".join(f"{k} = ?" for k in updates)
+                self.conn.execute(
+                    f"UPDATE papers SET {sets} WHERE id = ?", (*updates.values(), pid)
+                )
+                self.conn.commit()
+            return pid
+        if not paper.key:
+            paper.key = make_key(paper, self._taken_keys())
+        cur = self.conn.execute(
+            """INSERT INTO papers (paper_uid, key, title, abstract, year, authors, venue,
+               citation_count, reference_count, doi, arxiv_id, oa_pdf, url, tldr, source, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                paper.paper_id, paper.key, paper.title, paper.abstract, paper.year,
+                json.dumps(paper.authors), paper.venue, paper.citation_count,
+                paper.reference_count, paper.doi, paper.arxiv_id,
+                paper.open_access_pdf, paper.url, paper.tldr, paper.source, time.time(),
+            ),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def _row_to_paper(self, row: sqlite3.Row) -> Paper:
+        p = Paper(
+            paper_id=row["paper_uid"],
+            title=row["title"],
+            abstract=row["abstract"],
+            year=row["year"],
+            authors=json.loads(row["authors"] or "[]"),
+            venue=row["venue"],
+            citation_count=row["citation_count"] or 0,
+            reference_count=row["reference_count"] or 0,
+            doi=row["doi"],
+            arxiv_id=row["arxiv_id"],
+            open_access_pdf=row["oa_pdf"],
+            url=row["url"],
+            tldr=row["tldr"],
+            source=row["source"] or "import",
+        )
+        p.key = row["key"]
+        p.db_id = int(row["id"])  # type: ignore[attr-defined]
+        p.starred = bool(row["starred"])  # type: ignore[attr-defined]
+        p.folder = row["folder"]  # type: ignore[attr-defined]
+        return p
+
+    def get_paper(self, db_id: int) -> Paper | None:
+        row = self.conn.execute("SELECT * FROM papers WHERE id = ?", (db_id,)).fetchone()
+        return self._row_to_paper(row) if row else None
+
+    def find_paper(self, identifier: str) -> Paper | None:
+        """Look up by KEY, DOI, arXiv id, or canonical paper_uid."""
+        for column in ("key", "doi", "arxiv_id", "paper_uid"):
+            row = self.conn.execute(
+                f"SELECT * FROM papers WHERE {column} = ?", (identifier,)
+            ).fetchone()
+            if row:
+                return self._row_to_paper(row)
+        if identifier.startswith("doi:"):
+            return self.find_paper(identifier[4:])
+        return None
+
+    def list_papers(self, starred_only: bool = False, folder: str | None = None) -> list[Paper]:
+        sql = "SELECT * FROM papers"
+        clauses, args = [], []
+        if starred_only:
+            clauses.append("starred = 1")
+        if folder is not None:
+            clauses.append("folder = ?")
+            args.append(folder)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY year DESC, citation_count DESC"
+        return [self._row_to_paper(r) for r in self.conn.execute(sql, args)]
+
+    def set_star(self, db_id: int, starred: bool) -> None:
+        self.conn.execute("UPDATE papers SET starred = ? WHERE id = ?", (1 if starred else 0, db_id))
+        self.conn.commit()
+
+    def set_folder(self, db_id: int, folder: str | None) -> None:
+        self.conn.execute("UPDATE papers SET folder = ? WHERE id = ?", (folder, db_id))
+        self.conn.commit()
+
+    # -- searches -------------------------------------------------------------
+    def create_search(self, project: str, question: str, criteria: list[str], answers: dict) -> int:
+        pid = self.project_id(project)
+        cur = self.conn.execute(
+            "INSERT INTO searches (project_id, question, criteria, answers, created_at) VALUES (?, ?, ?, ?, ?)",
+            (pid, question, json.dumps(criteria), json.dumps(answers), time.time()),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def save_results(self, search_id: int, scored: list[Paper], included_ids: set[int], counts: dict, coverage: dict | None) -> None:
+        rank = 0
+        for paper in scored:
+            db_id = getattr(paper, "db_id", None)
+            if db_id is None:
+                db_id = self.upsert_paper(paper)
+                paper.db_id = db_id  # type: ignore[attr-defined]
+            is_included = db_id in included_ids
+            if is_included:
+                rank += 1
+            self.conn.execute(
+                """INSERT OR REPLACE INTO search_results (search_id, paper_id, match, reason, included, rank, provenance)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (search_id, db_id, paper.match, paper.match_reason, 1 if is_included else 0, rank if is_included else None, paper.found_via),
+            )
+        self.conn.execute(
+            "UPDATE searches SET counts = ?, coverage = ? WHERE id = ?",
+            (json.dumps(counts), json.dumps(coverage) if coverage else None, search_id),
+        )
+        self.conn.commit()
+
+    def get_search(self, search_id: int) -> dict | None:
+        row = self.conn.execute("SELECT * FROM searches WHERE id = ?", (search_id,)).fetchone()
+        if not row:
+            return None
+        return {
+            "id": int(row["id"]),
+            "project_id": int(row["project_id"]),
+            "question": row["question"],
+            "criteria": json.loads(row["criteria"] or "[]"),
+            "answers": json.loads(row["answers"] or "{}"),
+            "counts": json.loads(row["counts"] or "{}"),
+            "coverage": json.loads(row["coverage"]) if row["coverage"] else None,
+            "created_at": row["created_at"],
+        }
+
+    def list_searches(self) -> list[dict]:
+        ids = [int(r["id"]) for r in self.conn.execute("SELECT id FROM searches ORDER BY id DESC")]
+        return [self.get_search(i) for i in ids if self.get_search(i)]
+
+    def search_papers(self, search_id: int, included_only: bool = True) -> list[Paper]:
+        sql = """
+            SELECT p.*, sr.match AS sr_match, sr.reason AS sr_reason, sr.rank AS sr_rank, sr.provenance AS sr_provenance
+            FROM search_results sr JOIN papers p ON p.id = sr.paper_id
+            WHERE sr.search_id = ?
+        """
+        if included_only:
+            sql += " AND sr.included = 1"
+        sql += " ORDER BY sr.match DESC"
+        papers = []
+        for row in self.conn.execute(sql, (search_id,)):
+            p = self._row_to_paper(row)
+            p.match = row["sr_match"]
+            p.match_reason = row["sr_reason"]
+            p.found_via = row["sr_provenance"]
+            papers.append(p)
+        return papers
+
+    def search_paper_ids(self, search_id: int) -> set[int]:
+        return {
+            int(r["paper_id"])
+            for r in self.conn.execute("SELECT paper_id FROM search_results WHERE search_id = ?", (search_id,))
+        }
+
+    # -- files (reports) -------------------------------------------------------
+    def save_file(self, project: str, kind: str, name: str, content: str) -> int:
+        pid = self.project_id(project)
+        cur = self.conn.execute(
+            "INSERT INTO files (project_id, kind, name, content, created_at) VALUES (?, ?, ?, ?, ?)",
+            (pid, kind, name, content, time.time()),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def get_file(self, file_id: int) -> dict | None:
+        row = self.conn.execute("SELECT * FROM files WHERE id = ?", (file_id,)).fetchone()
+        if not row:
+            return None
+        return {"id": int(row["id"]), "kind": row["kind"], "name": row["name"], "content": row["content"]}
+
+    def list_files(self) -> list[dict]:
+        return [
+            {"id": int(r["id"]), "kind": r["kind"], "name": r["name"], "created_at": r["created_at"]}
+            for r in self.conn.execute("SELECT id, kind, name, created_at FROM files ORDER BY id DESC")
+        ]
+
+    # -- updates ------------------------------------------------------------------
+    def add_update(self, search_id: int, paper_db_id: int) -> None:
+        exists = self.conn.execute(
+            "SELECT 1 FROM updates WHERE search_id = ? AND paper_id = ?", (search_id, paper_db_id)
+        ).fetchone()
+        if not exists:
+            self.conn.execute(
+                "INSERT INTO updates (search_id, paper_id, found_at) VALUES (?, ?, ?)",
+                (search_id, paper_db_id, time.time()),
+            )
+            self.conn.commit()
+
+    def list_updates(self, search_id: int | None = None) -> list[dict]:
+        sql = """
+            SELECT u.id, u.search_id, u.found_at, u.seen, p.title, p.key, p.year
+            FROM updates u JOIN papers p ON p.id = u.paper_id
+        """
+        args: tuple = ()
+        if search_id is not None:
+            sql += " WHERE u.search_id = ?"
+            args = (search_id,)
+        sql += " ORDER BY u.found_at DESC"
+        return [dict(r) for r in self.conn.execute(sql, args)]
+"""The deep-search engine: orchestrates retrieval, scoring, snowballing.
+
+Stage names intentionally mirror the reference product's progress UI:
+Interpreting → Searching → Identifying → Reflecting → Adapting → Done.
+A `progress` callback receives (stage, detail) pairs so CLI, Web UI and
+tests can all observe the run.
+"""
+
+from __future__ import annotations
+
+from typing import Callable
+
+from .clients.openalex import OpenAlexClient
+from .clients.semantic_scholar import RateLimited, SemanticScholarClient
+from .llm import HeuristicLLM
+from .models import Paper, SearchOutcome
+from .scoring import dedupe, identity_keys
+from .store import Store
+
+ProgressFn = Callable[[str, str], None]
+
+
+def _noop(stage: str, detail: str) -> None:
+    pass
+
+
+class DeepSearchEngine:
+    def __init__(
+        self,
+        s2: SemanticScholarClient,
+        openalex: OpenAlexClient | None,
+        llm: HeuristicLLM,
+        store: Store,
+        include_threshold: float = 55.0,
+        crossref=None,
+    ):
+        self.s2 = s2
+        self.openalex = openalex
+        self.llm = llm
+        self.store = store
+        self.include_threshold = include_threshold
+        self.crossref = crossref
+
+    # ------------------------------------------------------------------
+    def brainstorm(self, question: str) -> list[str]:
+        return self.llm.brainstorm(question)
+
+    def build_criteria(self, question: str, answers: dict[str, str] | None = None) -> list[str]:
+        return self.llm.make_criteria(question, answers)
+
+    # ------------------------------------------------------------------
+    def _score(self, criteria: list[str], papers: list[Paper]) -> list[Paper]:
+        scores = self.llm.score_matches(criteria, papers)
+        for paper, (score, reason) in zip(papers, scores):
+            paper.match = score
+            paper.match_reason = reason
+        return papers
+
+    def _snowball(self, seeds: list[Paper], limit_per_seed: int = 30) -> list[Paper]:
+        out: list[Paper] = []
+        for seed in seeds:
+            label = f"[{seed.key}]" if seed.key else f"'{seed.title[:40]}'"
+            for fetcher, direction in ((self.s2.citations, "citations"), (self.s2.references, "references")):
+                try:
+                    found = fetcher(seed.paper_id, limit=limit_per_seed)
+                except Exception:
+                    continue
+                for p in found:
+                    if p.found_via is None:
+                        p.found_via = f"{direction} of {label}"
+                    out.append(p)
+        return out
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def estimate_coverage(
+        s2_relevant: set[str], oa_relevant: set[str], found_relevant: int
+    ) -> dict | None:
+        """Lincoln–Petersen / Chapman capture–recapture over two channels.
+
+        Treats Semantic Scholar and OpenAlex as two independent "captures"
+        of the same relevant-paper population. Only meaningful when both
+        channels returned relevant papers with some overlap.
+        """
+        n1, n2 = len(s2_relevant), len(oa_relevant)
+        m = len(s2_relevant & oa_relevant)
+        if n1 < 3 or n2 < 3 or m == 0:
+            return None
+        total_est = ((n1 + 1) * (n2 + 1) / (m + 1)) - 1
+        if total_est <= 0:
+            return None
+        coverage = max(0.0, min(1.0, found_relevant / total_est))
+        return {
+            "method": "capture-recapture (Chapman) over Semantic Scholar vs OpenAlex relevant sets",
+            "estimated_total_relevant": round(total_est, 1),
+            "found_relevant": found_relevant,
+            "estimated_coverage": round(coverage, 3),
+            "channel_sizes": {"semantic_scholar": n1, "openalex": n2, "overlap": m},
+        }
+
+    # ------------------------------------------------------------------
+    def trace(
+        self,
+        seed: Paper,
+        question: str | None = None,
+        project: str = "default",
+        hops: int = 1,
+        per_direction: int = 40,
+        progress: ProgressFn = _noop,
+    ) -> SearchOutcome:
+        """Citation-graph traversal from one seed paper ("相互查找").
+
+        Expands both directions — papers the seed cites (references) and
+        papers citing it (citations) — scores every neighbour against the
+        question (or the seed itself), and stores the neighbourhood as a
+        normal search so it can be reported, extracted and asked about.
+        """
+        warnings: list[str] = []
+        criteria = [question] if question else [seed.title, seed.abstract or seed.title]
+        label = f"Papers connected to: {seed.title}"
+        search_id = self.store.create_search(project, label, criteria, {})
+        seed.db_id = self.store.upsert_paper(seed)  # type: ignore[attr-defined]
+        progress("Tracing citation graph", f"seed [{seed.key}] {seed.title}")
+
+        seen_keys: set[str] = set(identity_keys(seed))
+        pool: list[Paper] = []
+        frontier = [seed]
+        for hop in range(1, hops + 1):
+            nxt: list[Paper] = []
+            for node in frontier:
+                node_label = f"[{node.key}]" if node.key else f"'{node.title[:40]}'"
+                for fetcher, direction in ((self.s2.citations, "citations"), (self.s2.references, "references")):
+                    try:
+                        found = fetcher(node.paper_id, limit=per_direction)
+                    except Exception:
+                        warnings.append(f"{direction} lookup failed for {node_label}.")
+                        continue
+                    for p in found:
+                        if identity_keys(p) & seen_keys:
+                            continue
+                        seen_keys |= identity_keys(p)
+                        if p.found_via is None:
+                            p.found_via = f"{direction} of {node_label}"
+                        pool.append(p)
+                        nxt.append(p)
+            if not nxt:
+                break
+            # Score this hop before deciding the next frontier.
+            hop_scored = self._score(criteria, nxt)
+            for p in hop_scored:
+                p.db_id = self.store.upsert_paper(p)  # type: ignore[attr-defined]
+            frontier = sorted(
+                (p for p in hop_scored if (p.match or 0) >= self.include_threshold),
+                key=lambda p: -(p.match or 0),
+            )[:5]
+            progress("Adapting and searching again", f"hop {hop}: {len(nxt)} neighbours")
+            if not frontier:
+                break
+
+        included = [p for p in pool if (p.match or 0) >= self.include_threshold]
+        included.sort(key=lambda p: -(p.match or 0))
+        included_db_ids = {getattr(p, "db_id") for p in included}
+        counts = {
+            "found": len(included),
+            "with_full_text": sum(1 for p in included if p.has_full_text),
+            "excluded": len(pool) - len(included),
+            "candidates": len(pool),
+        }
+        self.store.save_results(search_id, pool, included_db_ids, counts, None)
+        progress("Done", f"{counts['found']} connected papers · {counts['excluded']} excluded")
+        return SearchOutcome(
+            search_id=search_id,
+            question=label,
+            criteria=criteria,
+            included=included,
+            excluded_count=counts["excluded"],
+            with_full_text=counts["with_full_text"],
+            rounds=hops,
+            converged=True,
+            coverage=None,
+            warnings=warnings,
+        )
+
+    # ------------------------------------------------------------------
+    def run(
+        self,
+        question: str,
+        criteria: list[str],
+        answers: dict[str, str] | None = None,
+        project: str = "default",
+        per_query: int = 40,
+        max_rounds: int = 2,
+        seed_top: int = 8,
+        progress: ProgressFn = _noop,
+    ) -> SearchOutcome:
+        warnings: list[str] = []
+        search_id = self.store.create_search(project, question, criteria, answers or {})
+        progress("Interpreting your search criteria", f"{len(criteria)} criteria")
+
+        # -- Searching ---------------------------------------------------
+        progress("Searching for the most promising papers", "Semantic Scholar + OpenAlex")
+        pool: list[Paper] = []
+        queries = list(dict.fromkeys([question, *criteria]))
+        for q in queries:
+            try:
+                pool.extend(self.s2.search(q, limit=per_query))
+            except RateLimited:
+                warnings.append("Semantic Scholar rate-limited part of the initial search.")
+                continue
+            except Exception as exc:  # network etc.
+                warnings.append(f"Semantic Scholar search failed: {exc}")
+                continue
+        try:
+            if self.openalex is not None:
+                pool.extend(self.openalex.search(question, per_page=25))
+        except Exception:
+            warnings.append("OpenAlex channel unavailable; running single-source.")
+        if self.crossref is not None:
+            try:
+                pool.extend(self.crossref.search(question, rows=per_query))
+            except Exception:
+                warnings.append("Crossref channel unavailable.")
+
+        pool = dedupe(pool)
+        for p in pool:
+            if p.found_via is None:
+                p.found_via = "search"
+
+        # -- Identifying ---------------------------------------------------
+        progress("Identifying the best candidate papers", f"{len(pool)} candidates")
+        scored = self._score(criteria, pool)
+        included = [p for p in scored if (p.match or 0) >= self.include_threshold]
+        seen_keys: set[str] = set()
+        for p in scored:
+            seen_keys |= identity_keys(p)
+        # Persist early so included papers have citation KEYs; snowball
+        # provenance labels ("citations of [Key]") depend on them.
+        for p in scored:
+            p.db_id = self.store.upsert_paper(p)  # type: ignore[attr-defined]
+
+        # -- Reflecting / Adapting (snowball rounds) -------------------------
+        rounds_done = 0
+        converged = False
+        for round_no in range(1, max_rounds + 1):
+            rounds_done = round_no
+            progress("Reflecting on the results", f"round {round_no}")
+            reflection = self.llm.reflect(criteria, sorted(included, key=lambda p: -(p.match or 0)), round_no)
+            seeds = sorted(included, key=lambda p: -(p.match or 0))[:seed_top]
+            progress("Adapting and searching again", f"snowballing from {len(seeds)} seeds")
+            candidates = dedupe(self._snowball(seeds))
+            # The reflection step may propose fresh queries; run them too.
+            for new_q in reflection.get("new_queries") or []:
+                try:
+                    extra = self.s2.search(new_q, limit=20)
+                    for p in extra:
+                        if p.found_via is None:
+                            p.found_via = "reflection query"
+                    candidates = dedupe(candidates + extra)
+                except Exception:
+                    continue
+            candidates = [c for c in candidates if not (identity_keys(c) & seen_keys)]
+            for c in candidates:
+                seen_keys |= identity_keys(c)
+            if not candidates:
+                converged = True
+                break
+            new_scored = self._score(criteria, candidates)
+            for p in new_scored:
+                p.db_id = self.store.upsert_paper(p)  # type: ignore[attr-defined]
+            scored.extend(new_scored)
+            new_included = [p for p in new_scored if (p.match or 0) >= self.include_threshold]
+            included.extend(new_included)
+            gain = len(new_included) / max(1, len(included))
+            if reflection.get("stop") or gain < 0.03:
+                converged = True
+                break
+
+        included.sort(key=lambda p: -(p.match or 0))
+
+        # Persist papers and results; capture db ids for coverage sets.
+        s2_rel: set[str] = set()
+        oa_rel: set[str] = set()
+        included_db_ids: set[int] = set()
+        for p in scored:
+            db_id = self.store.upsert_paper(p)
+            p.db_id = db_id  # type: ignore[attr-defined]
+            if (p.match or 0) >= self.include_threshold:
+                if "semantic_scholar" in p.sources:
+                    s2_rel.add(p.paper_id)
+                if "openalex" in p.sources:
+                    oa_rel.add(p.paper_id)
+        for p in included:
+            included_db_ids.add(getattr(p, "db_id"))
+
+        coverage = self.estimate_coverage(s2_rel, oa_rel, len(included))
+        counts = {
+            "found": len(included),
+            "with_full_text": sum(1 for p in included if p.has_full_text),
+            "excluded": len(scored) - len(included),
+            "candidates": len(scored),
+        }
+        self.store.save_results(search_id, scored, included_db_ids, counts, coverage)
+        # save_results upserts again internally for any paper missing db_id; keep ids consistent.
+        progress("Done", f"{counts['found']} papers · {counts['with_full_text']} with full text · {counts['excluded']} excluded")
+
+        return SearchOutcome(
+            search_id=search_id,
+            question=question,
+            criteria=criteria,
+            included=included,
+            excluded_count=counts["excluded"],
+            with_full_text=counts["with_full_text"],
+            rounds=rounds_done,
+            converged=converged,
+            coverage=coverage,
+            warnings=warnings,
+        )
+
+exec
+/bin/zsh -lc "cat tests/test_llm.py; cat tests/test_engine.py; cat tests/test_api.py; sed -n '1,220p' webapp/js/app.js; sed -n '290,355p' webapp/js/app.js; rg -n 'score_matches|paper_dict|warnings' dls tests; sed -n '35,80p' dls/api.py; sed -n '275,340p' dls/api.py; head -35 dls/llm.py" in /Users/paoaiyong/.hermes/cache/scratch/undermind-repo
+ succeeded in 0ms:
+import json
+import unittest
+from unittest import mock
+
+from dls.config import Config
+from dls.llm import GeminiConnectorLLM, HeuristicLLM, get_llm
+
+
+class TestFactory(unittest.TestCase):
+    def test_gemini_connector_backend(self):
+        llm = get_llm(Config(llm_backend="gemini-connector", llm_model="gemini-3.8-flash"))
+        self.assertIsInstance(llm, GeminiConnectorLLM)
+
+    def test_heuristic_backend(self):
+        llm = get_llm(Config(llm_backend="heuristic"))
+        self.assertIs(type(llm), HeuristicLLM)
+
+
+class TestGeminiChatTransport(unittest.TestCase):
+    def setUp(self):
+        self.llm = GeminiConnectorLLM(
+            Config(llm_backend="gemini-connector", llm_model="gemini-3.8-flash")
+        )
+
+    def test_chat_parses_helper_output(self):
+        fake = mock.Mock(
+            returncode=0,
+            stdout=json.dumps({"choices": [{"message": {"content": "ready"}}]}),
+            stderr="",
+        )
+        with mock.patch("dls.llm.subprocess.run", return_value=fake) as run:
+            out = self.llm._chat("sys", "hi", json_mode=True)
+        self.assertEqual(out, "ready")
+        payload = json.loads(run.call_args.kwargs["input"])
+        self.assertEqual(payload["model"], "gemini-3.8-flash")
+        self.assertEqual(payload["response_format"], {"type": "json_object"})
+        self.assertEqual(payload["messages"][1]["content"], "hi")
+
+    def test_chat_raises_on_helper_failure(self):
+        fake = mock.Mock(returncode=1, stdout="", stderr="boom")
+        with mock.patch("dls.llm.subprocess.run", return_value=fake), \
+             mock.patch("dls.llm.time.sleep", return_value=None):
+            with self.assertRaises(RuntimeError):
+                self.llm._chat("sys", "hi")
+
+    def test_chat_retries_then_succeeds(self):
+        bad = mock.Mock(returncode=1, stdout="", stderr="stall")
+        good = mock.Mock(
+            returncode=0,
+            stdout=json.dumps({"choices": [{"message": {"content": "ok"}}]}),
+            stderr="",
+        )
+        with mock.patch("dls.llm.subprocess.run", side_effect=[bad, good]) as run, \
+             mock.patch("dls.llm.time.sleep", return_value=None):
+            out = self.llm._chat("sys", "hi")
+        self.assertEqual(out, "ok")
+        self.assertEqual(run.call_count, 2)
+
+
+if __name__ == "__main__":
+    unittest.main()
+import tempfile
+import unittest
+from pathlib import Path
+
+from dls.engine import DeepSearchEngine
+from dls.llm import HeuristicLLM
+from dls.models import Paper
+from dls.store import Store
+
+CRITERIA = [
+    "natural-language descriptions of tabular datasets using large language "
+    "models, including data profiling and metadata generation for catalogs"
+]
+ABSTRACT = (
+    "We generate natural language descriptions of tabular datasets using large "
+    "language models, with data profiling and metadata generation for dataset "
+    "catalogs and discovery."
+)
+
+
+def mk(pid, title, abstract=ABSTRACT, year=2025, cites=30, doi=None, source="semantic_scholar", authors=None):
+    return Paper(
+        paper_id=pid, title=title, abstract=abstract, year=year,
+        authors=authors or ["Alice Zhang"], citation_count=cites, doi=doi, source=source,
+    )
+
+
+P1 = mk("s2-1", "AutoDDG: Automated Dataset Description Generation", doi="10.1/a")
+P2_S2 = mk("s2-2", "Polaris: Structured Dataset Descriptions", year=2026, cites=5, doi="10.1/b")
+P2_OA = mk("W2", "Polaris: Structured Dataset Descriptions", year=2026, cites=5, doi="10.1/b", source="openalex")
+P3 = mk(
+    "s2-3", "Quantum error correction with surface codes",
+    abstract="Fault tolerant quantum computation with surface codes and decoders.",
+    year=2024, cites=900,
+)
+P4 = mk("s2-4", "Dataset Metadata Generation for Catalogs", year=2023, cites=12, doi="10.1/d")
+P5 = mk("W5", "Metadata Generation for Dataset Discovery", year=2026, cites=3, source="openalex")
+P6 = mk("W6", "Tabular Dataset Descriptions with Language Models", year=2026, cites=2, source="openalex")
+
+
+class FakeS2:
+    def search(self, query, limit=50, offset=0, year=None):
+        return [P1, P2_S2, P3]
+
+    def citations(self, paper_id, limit=50):
+        return [P4] if paper_id == "s2-1" else []
+
+    def references(self, paper_id, limit=50):
+        return []
+
+
+class FakeOpenAlex:
+    def search(self, query, per_page=25):
+        return [P2_OA, P5, P6]
+
+
+class TestEngine(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(Path(self.tmp.name) / "test.db")
+        self.engine = DeepSearchEngine(FakeS2(), FakeOpenAlex(), HeuristicLLM(), self.store)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_full_run(self):
+        outcome = self.engine.run("dataset descriptions with LLMs", CRITERIA, per_query=10)
+        # Included: P1, P2 (merged), P5, P6 from search + P4 from snowballing. P3 excluded.
+        self.assertEqual(outcome.found, 5)
+        self.assertEqual(outcome.excluded_count, 1)
+        self.assertTrue(outcome.converged)
+        self.assertGreaterEqual(outcome.rounds, 1)
+        titles = [p.title for p in outcome.included]
+        self.assertTrue(any("AutoDDG" in t for t in titles))
+        self.assertTrue(any("Metadata Generation for Catalogs" in t for t in titles))
+        # Provenance: the snowballed paper records which seed it came from.
+        snowballed = [p for p in outcome.included if "Catalogs" in p.title][0]
+        self.assertEqual(snowballed.found_via, "citations of [Zhang25]")
+        stored_snow = [p for p in self.store.search_papers(outcome.search_id) if "Catalogs" in p.title][0]
+        self.assertEqual(stored_snow.found_via, "citations of [Zhang25]")
+        for p in outcome.included:
+            self.assertIsNotNone(p.key)
+            self.assertGreaterEqual(p.match, 55)
+        # Coverage: S2 relevant {P1,P2,P4}=3, OA relevant {P2,P5,P6}=3, overlap {P2}=1
+        self.assertIsNotNone(outcome.coverage)
+        self.assertAlmostEqual(outcome.coverage["estimated_total_relevant"], 7.0)
+        self.assertAlmostEqual(outcome.coverage["estimated_coverage"], 5 / 7, places=3)
+        # Persisted
+        stored = self.store.search_papers(outcome.search_id, included_only=True)
+        self.assertEqual(len(stored), 5)
+        search = self.store.get_search(outcome.search_id)
+        self.assertEqual(search["counts"]["found"], 5)
+
+
+class FakeS2Clone:
+    """Returns the seed paper again under a different id (cross-source clone)."""
+
+    def search(self, query, limit=50, offset=0, year=None):
+        return [P1]
+
+    def citations(self, paper_id, limit=50):
+        clone = mk("doi:10.1/a", P1.title, year=2025, cites=30, doi="10.1/a", source="crossref")
+        return [clone]
+
+    def references(self, paper_id, limit=50):
+        return []
+
+
+class TestCrossSourceDedup(unittest.TestCase):
+    def test_clone_not_double_counted(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = Store(Path(td) / "t.db")
+            engine = DeepSearchEngine(FakeS2Clone(), None, HeuristicLLM(), store)
+            outcome = engine.run("dataset descriptions with LLMs", CRITERIA, per_query=10)
+            self.assertEqual(outcome.found, 1)
+            self.assertEqual(outcome.included[0].title, P1.title)
+
+
+class TestTrace(unittest.TestCase):
+    def test_trace_from_seed(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = Store(Path(td) / "t.db")
+            engine = DeepSearchEngine(FakeS2(), None, HeuristicLLM(), store)
+            seed = mk("s2-1", "AutoDDG: Automated Dataset Description Generation", doi="10.1/a")
+            outcome = engine.trace(seed, question=CRITERIA[0])
+            # FakeS2.citations(s2-1) -> [P4]; references -> [].
+            self.assertEqual(outcome.found, 1)
+            self.assertEqual(outcome.included[0].title, P4.title)
+            self.assertEqual(outcome.included[0].found_via, "citations of [Zhang25]")
+
+
+if __name__ == "__main__":
+    unittest.main()
+"""Offline tests for the HTTP API layer (dls.api).
+
+Uses a fake engine/LLM context so no network or API key is needed.
+Skipped automatically when fastapi is not installed (it is an optional
+extra); run with the project venv:  .venv/bin/python -m unittest tests.test_api
+"""
+
+from __future__ import annotations
+
+import tempfile
+import time
+import types
+import unittest
+from pathlib import Path
+
+try:
+    from fastapi.testclient import TestClient
+except ImportError:  # pragma: no cover
+    raise unittest.SkipTest("fastapi not installed (pip install -e .[api])")
+
+from dls.api import create_app
+from dls.models import Paper, SearchOutcome
+from dls.store import Store
+
+
+def _paper() -> Paper:
+    p = Paper(
+        paper_id="s2:abc",
+        title="AutoDDG: Automated Dataset Description Generation",
+        abstract="We generate descriptions of tabular datasets.",
+        year=2025,
+        authors=["Wei Zhang"],
+        venue="ACM TODS",
+        citation_count=12,
+        doi="10.1145/3786626",
+    )
+    return p
+
+
+def _fake_ctx(tmp: Path):
+    store = Store(tmp / "library.db")
+    paper = _paper()
+    paper.match = 92.0
+    paper.match_reason = "directly on topic"
+    paper.found_via = "search"
+
+    def fake_run(question, criteria, answers=None, project="default",
+                 per_query=40, max_rounds=2, progress=None):
+        sid = store.create_search(project, question, criteria, answers or {})
+        if progress:
+            progress("Searching for the most promising papers", "fake channel")
+            progress("Identifying the best candidate papers", "1 candidates")
+        db_id = store.upsert_paper(paper)
+        paper.db_id = db_id
+        store.save_results(sid, [paper], {db_id}, {"found": 1, "excluded": 0}, None)
+        if progress:
+            progress("Done", "1 papers")
+        return SearchOutcome(
+            search_id=sid, question=question, criteria=criteria, included=[paper],
+            excluded_count=0, with_full_text=0, rounds=1, converged=True,
+            coverage=None, warnings=[],
+        )
+
+    engine = types.SimpleNamespace(
+        brainstorm=lambda q: ["Scope?", "Methods only?"],
+        build_criteria=lambda q, answers=None: [q, "narrow scope"],
+        run=fake_run,
+        trace=None,
+    )
+    llm = types.SimpleNamespace(answer=lambda q, papers: f"answer over {len(papers)} papers")
+    config = types.SimpleNamespace(
+        llm_model="test-model",
+        db_path=tmp / "library.db",
+        files_dir=tmp / "files",
+        ensure_dirs=lambda: (tmp / "files").mkdir(parents=True, exist_ok=True),
+    )
+    return types.SimpleNamespace(
+        config=config, store=store, engine=engine, llm=llm, s2=None, crossref=None
+    )
+
+
+def _wait_job(client: TestClient, job_id: str, timeout: float = 10.0) -> dict:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        snap = client.get(f"/api/jobs/{job_id}").json()
+        if snap["status"] in ("done", "error"):
+            return snap
+        time.sleep(0.05)
+    raise AssertionError("job did not finish in time")
+
+
+class ApiTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.ctx = _fake_ctx(self.tmp)
+        self.client = TestClient(create_app(self.ctx))
+
+    def test_health(self):
+        r = self.client.get("/api/health")
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["ok"])
+
+    def test_plan(self):
+        r = self.client.post("/api/plan", json={"question": "dataset descriptions with LLMs"})
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(len(body["questions"]), 2)
+        self.assertEqual(len(body["criteria"]), 2)
+
+    def test_search_job_flow(self):
+        r = self.client.post("/api/searches", json={"question": "dataset descriptions"})
+        self.assertEqual(r.status_code, 202)
+        snap = _wait_job(self.client, r.json()["job_id"])
+        self.assertEqual(snap["status"], "done", snap)
+        self.assertEqual(snap["result"]["found"], 1)
+        stages = [e["stage"] for e in snap["events"]]
+        self.assertIn("Searching for the most promising papers", stages)
+
+        search_id = snap["result"]["search_id"]
+        detail = self.client.get(f"/api/searches/{search_id}").json()
+        self.assertEqual(detail["question"], "dataset descriptions")
+        self.assertEqual(len(detail["papers"]), 1)
+        self.assertEqual(detail["papers"][0]["key"], "Zhang25")
+        self.assertEqual(detail["papers"][0]["match"], 92.0)
+
+    def test_search_events_stream(self):
+        r = self.client.post("/api/searches", json={"question": "stream test"})
+        job_id = r.json()["job_id"]
+        _wait_job(self.client, job_id)
+        with self.client.stream("GET", f"/api/jobs/{job_id}/events") as stream:
+            text = "".join(chunk for chunk in stream.iter_text())
+        self.assertIn('"type": "progress"', text)
+        self.assertIn('"type": "done"', text)
+
+    def test_ask_and_export_and_star(self):
+        r = self.client.post("/api/searches", json={"question": "q"})
+        snap = _wait_job(self.client, r.json()["job_id"])
+        search_id = snap["result"]["search_id"]
+
+        ans = self.client.post(f"/api/searches/{search_id}/ask", json={"question": "which?"})
+        self.assertEqual(ans.json()["answer"], "answer over 1 papers")
+
+        exp = self.client.get(f"/api/searches/{search_id}/export", params={"format": "bibtex"})
+        self.assertEqual(exp.status_code, 200)
+        self.assertIn("Zhang25", exp.text)
+
+        papers = self.client.get("/api/papers").json()
+        self.assertEqual(len(papers), 1)
+        db_id = papers[0]["db_id"]
+        star = self.client.post(f"/api/papers/{db_id}/star", json={"starred": True})
+        self.assertEqual(star.json()["starred"], True)
+        starred = self.client.get("/api/papers", params={"starred": True}).json()
+        self.assertEqual(len(starred), 1)
+
+    def test_unknown_job_404(self):
+        self.assertEqual(self.client.get("/api/jobs/nope").status_code, 404)
+        self.assertEqual(self.client.get("/api/searches/999").status_code, 404)
+
+
+if __name__ == "__main__":
+    unittest.main()
+// Deep Literature Search — web workbench.
+// Layout: searches/files (left) · results table (center) ·
+// progress / report / table / ask tabs (right). Talks to dls/api.py.
+
+import { api, watchJob } from "./api.js";
+
+/* ------------------------------------------------------------------ */
+/* tiny markdown renderer (escape first, then a safe subset)           */
+/* ------------------------------------------------------------------ */
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+function inline(s) {
+  return esc(s)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(?<![*\w])\*([^*\n]+)\*/g, "<em>$1</em>")
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/\[([A-Z][A-Za-zÀ-ÿ'-]*\d{2}[a-z]?)\]/g, '<span class="cite">[$1]</span>');
+}
+
+export function renderMarkdown(md) {
+  const lines = String(md ?? "").split("\n");
+  const out = [];
+  let i = 0;
+  let listOpen = false;
+  const closeList = () => { if (listOpen) { out.push("</ul>"); listOpen = false; } };
+  while (i < lines.length) {
+    const line = lines[i];
+    // table block
+    if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
+      closeList();
+      const cells = (l) => l.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+      const head = cells(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) { rows.push(cells(lines[i])); i++; }
+      out.push("<table><thead><tr>" + head.map((h) => `<th>${inline(h)}</th>`).join("") + "</tr></thead><tbody>");
+      for (const r of rows) out.push("<tr>" + r.map((c) => `<td>${inline(c)}</td>`).join("") + "</tr>");
+      out.push("</tbody></table>");
+      continue;
+    }
+    const h = line.match(/^(#{1,4})\s+(.*)$/);
+    if (h) { closeList(); out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`); i++; continue; }
+    const li = line.match(/^\s*[-*]\s+(.*)$/);
+    if (li) { if (!listOpen) { out.push("<ul>"); listOpen = true; } out.push(`<li>${inline(li[1])}</li>`); i++; continue; }
+    closeList();
+    if (line.trim() === "") { i++; continue; }
+    if (/^\s*(-{3,}|_{3,})\s*$/.test(line)) { out.push("<hr>"); i++; continue; }
+    out.push(`<p>${inline(line)}</p>`);
+    i++;
+  }
+  closeList();
+  return out.join("\n");
+}
+
+/* ------------------------------------------------------------------ */
+/* state + element helpers                                             */
+/* ------------------------------------------------------------------ */
+const $ = (id) => document.getElementById(id);
+const state = { searchId: null, search: null, tab: "progress" };
+
+function switchTab(name) {
+  state.tab = name;
+  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
+  for (const page of ["progress", "report", "table", "ask"]) {
+    $("tab-" + page).classList.toggle("hidden", page !== name);
+  }
+}
+document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.dataset.tab)));
+
+function scoreClass(m) { return m >= 80 ? "high" : m >= 55 ? "mid" : "low"; }
+
+function logJobEvent(jobLabel) {
+  const head = document.createElement("div");
+  head.className = "job-head";
+  head.textContent = jobLabel + " ";
+  $("job-log").appendChild(head);
+  return (ev) => {
+    const row = document.createElement("div");
+    row.className = "ev";
+    row.innerHTML = `<span class="stage">${esc(ev.stage)}</span><span class="detail">${esc(ev.detail)}</span>`;
+    $("job-log").appendChild(row);
+    $("tab-progress").scrollTop = $("tab-progress").scrollHeight;
+    return head;
+  };
+}
+
+// Run a job: stream progress into the log, return the final event.
+async function runJob(jobId, label) {
+  switchTab("progress");
+  if ($("job-log").querySelector(".muted")) $("job-log").innerHTML = "";
+  const render = logJobEvent(label);
+  let headEl = null;
+  const final = await watchJob(jobId, (ev) => { headEl = render(ev) || headEl; });
+  const status = document.createElement("span");
+  status.className = final.type === "done" ? "status-done" : "status-error";
+  status.textContent = final.type === "done" ? "✓ 完成" : `✗ ${final.error || "失败"}`;
+  (headEl || $("job-log")).appendChild(status);
+  return final;
+}
+
+/* ------------------------------------------------------------------ */
+/* searches list + detail                                              */
+/* ------------------------------------------------------------------ */
+async function refreshSearches() {
+  const searches = await api.listSearches();
+  const list = $("search-list");
+  list.innerHTML = searches.length ? "" : '<p class="muted">还没有检索记录。</p>';
+  for (const s of searches) {
+    const div = document.createElement("div");
+    div.className = "search-item" + (s.id === state.searchId ? " active" : "");
+    const found = s.counts?.found ?? "?";
+    const date = s.created_at ? new Date(s.created_at * 1000).toLocaleDateString() : "";
+    div.innerHTML = `<div class="q">${esc(s.question)}</div><div class="m">#${s.id} · ${found} 篇入选 · ${esc(date)}</div>`;
+    div.addEventListener("click", () => openSearch(s.id));
+    list.appendChild(div);
+  }
+}
+
+async function refreshFiles() {
+  const files = await api.listFiles();
+  const list = $("file-list");
+  list.innerHTML = files.length ? "" : '<p class="muted">还没有文件。</p>';
+  for (const f of files) {
+    const div = document.createElement("div");
+    div.className = "file-item";
+    div.innerHTML = `<span class="kind">${esc(f.kind)}</span>${esc(f.name)}`;
+    div.addEventListener("click", () => openFile(f));
+    list.appendChild(div);
+  }
+}
+
+async function openFile(meta) {
+  const f = await api.getFile(meta.id);
+  if (f.kind === "table") {
+    $("table-view").innerHTML = renderMarkdown(f.content);
+    $("extract-bar").classList.remove("hidden");
+    switchTab("table");
+  } else {
+    $("report-view").innerHTML = renderMarkdown(f.content);
+    switchTab("report");
+  }
+}
+
+function paperRow(p, mode) {
+  const tr = document.createElement("tr");
+  tr.className = "paper-row";
+  const first = mode === "library"
+    ? `<span class="key">${esc(p.key || "")}</span>`
+    : `<span class="score ${scoreClass(p.match ?? 0)}">${p.match != null ? p.match.toFixed(0) : "–"}</span>`;
+  const titleLink = p.doi
+    ? `<a href="https://doi.org/${esc(p.doi)}" target="_blank" rel="noopener">${esc(p.title)}</a>`
+    : esc(p.title);
+  const authors = (p.authors || []).slice(0, 4).join(", ") + ((p.authors || []).length > 4 ? " et al." : "");
+  const via = p.found_via && p.found_via !== "search" ? `<span class="via">← ${esc(p.found_via)}</span>` : "";
+  const pdf = p.open_access_pdf ? ` · <a href="${esc(p.open_access_pdf)}" target="_blank" rel="noopener">PDF</a>` : "";
+  tr.innerHTML = `
+    <td>${first}</td>
+    <td>
+      <div class="paper-title">${titleLink}${via}</div>
+      <div class="paper-sub">${esc(authors)} · ${p.year ?? "n.d."} · ${esc(p.venue || "")}${pdf}</div>
+      ${p.match_reason ? `<div class="paper-reason">${esc(p.match_reason)}</div>` : ""}
+    </td>
+    <td>${p.citations_per_year ?? ""}</td>
+    <td><button class="star-btn ${p.starred ? "on" : ""}" title="收藏">★</button></td>`;
+  tr.querySelector(".star-btn").addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const now = !p.starred;
+    await api.setStar(p.db_id, now);
+    p.starred = now;
+    e.currentTarget.classList.toggle("on", now);
+  });
+  tr.addEventListener("click", () => {
+    const next = tr.nextElementSibling;
+    if (next && next.classList.contains("abstract-row")) { next.remove(); return; }
+    const abs = document.createElement("tr");
+    abs.className = "abstract-row";
+    abs.innerHTML = `<td colspan="4">${esc(p.tldr || p.abstract || "（无摘要）")}</td>`;
+    tr.after(abs);
+  });
+  return tr;
+}
+
+async function openSearch(id) {
+  state.searchId = id;
+  const s = await api.getSearch(id);
+  state.search = s;
+  $("welcome").classList.add("hidden");
+  $("library-view").classList.add("hidden");
+  $("search-detail").classList.remove("hidden");
+  $("detail-question").textContent = s.question;
+  const c = s.counts || {};
+  const cov = s.coverage
+    ? ` · 覆盖估计 ≈${Math.round((s.coverage.estimated_coverage || 0) * 100)}%（约 ${s.coverage.estimated_total_relevant} 篇相关）`
+    : "";
+  $("detail-meta").innerHTML =
+    `<span>入选 ${c.found ?? s.papers.length} 篇</span><span>全文 ${c.with_full_text ?? 0}</span>` +
+    `<span>排除 ${c.excluded ?? 0}</span><span>候选 ${c.candidates ?? "?"}</span><span>${cov}</span>`;
+  $("detail-criteria").innerHTML = (s.criteria || []).map((x) => `<span class="chip">${esc(x)}</span>`).join("");
+  const body = $("papers-body");
+  body.innerHTML = "";
+  for (const p of s.papers) body.appendChild(paperRow(p, "search"));
+  $("papers-empty").classList.toggle("hidden", s.papers.length > 0);
+  $("ask-log").innerHTML = '<p class="muted">基于当前检索的入选论文提问，例如：哪些用了表格画像？</p>';
+  await refreshSearches();
+}
+
+/* ------------------------------------------------------------------ */
+/* library view                                                        */
+/* ------------------------------------------------------------------ */
+async function openLibrary() {
+  $("welcome").classList.add("hidden");
+  $("search-detail").classList.add("hidden");
+  $("library-view").classList.remove("hidden");
+  const papers = await api.listPapers($("chk-starred").checked);
+  $("library-count").textContent = `${papers.length} 篇`;
+  $("ask-input").value = "";
+  const log = $("ask-log");
+  if (log.querySelector(".muted")) log.innerHTML = "";
+  const u = document.createElement("div");
+  u.className = "ask-msg user"; u.textContent = q; log.appendChild(u);
+  const b = document.createElement("div");
+  b.className = "ask-msg bot"; b.textContent = "思考中…"; log.appendChild(b);
+  try {
+    const { answer } = await api.ask(state.searchId, q);
+    b.innerHTML = renderMarkdown(answer);
+  } catch (e) {
+    b.textContent = "出错：" + e.message;
+  }
+}
+$("btn-ask").addEventListener("click", sendAsk);
+$("ask-input").addEventListener("keydown", (e) => { if (e.key === "Enter") sendAsk(); });
+
+/* ------------------------------------------------------------------ */
+/* dialogs: new search / trace / import                                */
+/* ------------------------------------------------------------------ */
+const dlgSearch = $("dlg-search");
+$("btn-new-search").addEventListener("click", () => { dlgSearch.showModal(); });
+
+$("ns-plan").addEventListener("click", async () => {
+  const question = $("ns-question").value.trim();
+  if (!question) { alert("先写研究问题。"); return; }
+  const btn = $("ns-plan");
+  btn.disabled = true; btn.textContent = "生成中…";
+  try {
+    const { questions, criteria } = await api.plan(question, {});
+    $("ns-questions").innerHTML = questions.map((q) => `
+      <div class="ns-q"><div class="qtext">${esc(q)}</div>
+      <input type="text" data-q="${esc(q)}" placeholder="你的回答（可留空）"></div>`).join("");
+    $("ns-criteria").value = criteria.join("\n");
+    $("ns-plan-area").classList.remove("hidden");
+    btn.textContent = "按回答重新生成标准";
+  } finally { btn.disabled = false; }
+});
+
+$("ns-launch").addEventListener("click", async () => {
+  const question = $("ns-question").value.trim();
+  if (!question) { alert("先写研究问题。"); return; }
+  const answers = {};
+  document.querySelectorAll("#ns-questions input").forEach((inp) => {
+    if (inp.value.trim()) answers[inp.dataset.q] = inp.value.trim();
+  });
+  const criteriaText = $("ns-criteria").value.trim();
+  const criteria = criteriaText ? criteriaText.split("\n").map((x) => x.trim()).filter(Boolean) : null;
+  dlgSearch.close();
+  const { job_id } = await api.launchSearch({ question, criteria, answers });
+  const final = await runJob(job_id, "深度检索");
+  await refreshSearches();
+  if (final.type === "done" && final.result?.search_id) openSearch(final.result.search_id);
+});
+
+const dlgTrace = $("dlg-trace");
+$("btn-new-trace").addEventListener("click", () => dlgTrace.showModal());
+$("tr-launch").addEventListener("click", async () => {
+  const identifier = $("tr-seed").value.trim();
+  if (!identifier) { alert("先填种子论文。"); return; }
+  const question = $("tr-question").value.trim() || null;
+  dlgTrace.close();
+  const { job_id } = await api.launchTrace({ identifier, question, hops: 1 });
+  const final = await runJob(job_id, "引用图谱扩展");
+  await refreshSearches();
+  if (final.type === "done" && final.result?.search_id) openSearch(final.result.search_id);
+dls/updates.py:38:        score, _reason = llm.score_matches(search["criteria"], [paper])[0]
+dls/engine.py:53:        scores = self.llm.score_matches(criteria, papers)
+dls/engine.py:118:        warnings: list[str] = []
+dls/engine.py:136:                        warnings.append(f"{direction} lookup failed for {node_label}.")
+dls/engine.py:181:            warnings=warnings,
+dls/engine.py:196:        warnings: list[str] = []
+dls/engine.py:208:                warnings.append("Semantic Scholar rate-limited part of the initial search.")
+dls/engine.py:211:                warnings.append(f"Semantic Scholar search failed: {exc}")
+dls/engine.py:217:            warnings.append("OpenAlex channel unavailable; running single-source.")
+dls/engine.py:222:                warnings.append("Crossref channel unavailable.")
+dls/engine.py:316:            warnings=warnings,
+dls/models.py:69:    warnings: list[str] = field(default_factory=list)
+dls/llm.py:69:    def score_matches(self, criteria: list[str], papers: list[Paper]) -> list[tuple[float, str]]:
+dls/llm.py:286:    def score_matches(self, criteria: list[str], papers: list[Paper]) -> list[tuple[float, str]]:
+tests/test_api.py:61:            coverage=None, warnings=[],
+dls/cli.py:90:    for w in outcome.warnings:
+dls/cli.py:135:    for w in outcome.warnings:
+dls/api.py:175:def paper_dict(p: Paper) -> dict:
+dls/api.py:283:        search["papers"] = [paper_dict(p) for p in papers]
+dls/api.py:312:                "warnings": outcome.warnings,
+dls/api.py:333:                "warnings": outcome.warnings,
+dls/api.py:438:        return [paper_dict(p) for p in papers]
+dls/api.py:446:        return paper_dict(paper)
+dls/api.py:470:        return paper_dict(paper)
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+from .models import Paper
+
+WEBAPP_DIR = Path(__file__).resolve().parent.parent / "webapp"
+
+
+# ----------------------------------------------------------------------
+# Job management
+# ----------------------------------------------------------------------
+
+@dataclass
+class Job:
+    id: str
+    kind: str
+    status: str = "queued"  # queued | running | done | error
+    created_at: float = field(default_factory=time.time)
+    finished_at: float | None = None
+    events: list[dict] = field(default_factory=list)
+    result: dict | None = None
+    error: str | None = None
+    _cond: threading.Condition = field(default_factory=threading.Condition, repr=False)
+
+    def emit(self, stage: str, detail: str) -> None:
+        with self._cond:
+            self.events.append({"ts": time.time(), "stage": stage, "detail": detail})
+            self._cond.notify_all()
+
+    def finish(self, status: str, result: dict | None = None, error: str | None = None) -> None:
+        with self._cond:
+            self.status = status
+            self.result = result
+            self.error = error
+            self.finished_at = time.time()
+            self._cond.notify_all()
+
+    def snapshot(self) -> dict:
+        return {
+            "id": self.id,
+            "kind": self.kind,
+            "status": self.status,
+            "created_at": self.created_at,
+            "finished_at": self.finished_at,
+
+    @app.get("/api/searches/{search_id}")
+    def get_search(search_id: int, included_only: bool = True) -> dict:
+        with locked():
+            search = ctx.store.get_search(search_id)
+            if search is None:
+                raise HTTPException(404, "search not found")
+            papers = ctx.store.search_papers(search_id, included_only=included_only)
+        search["papers"] = [paper_dict(p) for p in papers]
+        return search
+
+    @app.post("/api/searches", status_code=202)
+    def launch_search(body: SearchIn) -> dict:
+        def work(job: Job) -> dict:
+            criteria = body.criteria
+            if not criteria:
+                with locked():
+                    criteria = ctx.engine.build_criteria(body.question, body.answers or None)
+            job.emit("Interpreting your search criteria", f"{len(criteria)} criteria")
+            with locked():
+                outcome = ctx.engine.run(
+                    body.question,
+                    criteria,
+                    answers=body.answers,
+                    project=body.project,
+                    per_query=body.per_query,
+                    max_rounds=body.rounds,
+                    progress=job.emit,
+                )
+            return {
+                "search_id": outcome.search_id,
+                "found": outcome.found,
+                "excluded": outcome.excluded_count,
+                "with_full_text": outcome.with_full_text,
+                "rounds": outcome.rounds,
+                "converged": outcome.converged,
+                "coverage": outcome.coverage,
+                "warnings": outcome.warnings,
+            }
+
+        job = jobs.submit("search", work)
+        return {"job_id": job.id}
+
+    @app.post("/api/trace", status_code=202)
+    def launch_trace(body: TraceIn) -> dict:
+        def work(job: Job) -> dict:
+            with locked():
+                seed = _resolve_seed(ctx, body.identifier)
+            if seed is None:
+                raise ValueError(f"could not resolve seed paper: {body.identifier}")
+            with locked():
+                outcome = ctx.engine.trace(
+                    seed, question=body.question, hops=body.hops, progress=job.emit
+                )
+            return {
+                "search_id": outcome.search_id,
+                "found": outcome.found,
+                "excluded": outcome.excluded_count,
+                "warnings": outcome.warnings,
+            }
+
+        job = jobs.submit("trace", work)
+        return {"job_id": job.id}
+
+    # -- per-search actions ----------------------------------------------------
+    @app.post("/api/searches/{search_id}/report", status_code=202)
+"""Pluggable LLM backends.
+
+Two implementations of the same interface:
+
+- ``OpenAIChatLLM``: any OpenAI-compatible chat endpoint (set LLM_API_KEY,
+  LLM_BASE_URL, LLM_MODEL). Used for brainstorming, criteria writing,
+  MATCH judging, report writing, table extraction and follow-up Q&A.
+- ``GeminiConnectorLLM``: Gemini through the registered custom.gemini
+  connector (set DLS_LLM_BACKEND=gemini-connector). The API key lives in
+  the connector's secure storage and is never present in this process;
+  each call goes through the connector helper, which attaches a
+  surrogate credential that is swapped for the real key on egress.
+- ``HeuristicLLM``: deterministic offline fallback (lexical scoring,
+  extractive report assembly). Lets the whole pipeline run — and be
+  tested — with no API key at all.
+
+Every method degrades to the heuristic behavior on API errors, so a flaky
+endpoint never kills a search run.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import sys
+import time
+
+import requests
+
+from .config import Config
+from .models import Paper
+from .scoring import content_tokens, heuristic_match
+
+
+
+codex
+已确认当前分支是 `feat/score-provenance`，现有代码会静默降级，也会接受 170、NaN 等非法分数。我会把来源和降级原因按每次搜索结果保存，并在完成提示中汇总所有降级论文，包括被排除的论文。历史结果缺少来源时会显示“评分来源未知”。
+exec
+/bin/zsh -lc "sed -n '175,202p' dls/api.py; cat dls/updates.py; cat tests/test_library.py; rg -n -A18 'Smallest' CODEX_REVIEW.md" in /Users/paoaiyong/.hermes/cache/scratch/undermind-repo
+ succeeded in 0ms:
+def paper_dict(p: Paper) -> dict:
+    return {
+        "db_id": getattr(p, "db_id", None),
+        "paper_id": p.paper_id,
+        "key": p.key,
+        "title": p.title,
+        "abstract": p.abstract,
+        "tldr": p.tldr,
+        "year": p.year,
+        "authors": p.authors,
+        "venue": p.venue,
+        "citation_count": p.citation_count,
+        "reference_count": p.reference_count,
+        "citations_per_year": round(p.citations_per_year(), 1),
+        "doi": p.doi,
+        "arxiv_id": p.arxiv_id,
+        "url": p.url,
+        "open_access_pdf": p.open_access_pdf,
+        "has_full_text": p.has_full_text,
+        "source": p.source,
+        "match": p.match,
+        "match_reason": p.match_reason,
+        "found_via": p.found_via,
+        "starred": bool(getattr(p, "starred", False)),
+        "folder": getattr(p, "folder", None),
+    }
+
+
+"""Updates: re-check a saved search's criteria for newly published papers."""
+
+from __future__ import annotations
+
+import datetime
+
+from .clients.semantic_scholar import SemanticScholarClient
+from .llm import HeuristicLLM
+from .scoring import dedupe
+from .store import Store
+
+
+def check_updates(
+    store: Store,
+    search_id: int,
+    s2: SemanticScholarClient,
+    llm: HeuristicLLM,
+    threshold: float = 55.0,
+) -> list[dict]:
+    search = store.get_search(search_id)
+    if not search:
+        raise ValueError(f"search {search_id} not found")
+    since_year = datetime.datetime.fromtimestamp(search["created_at"]).year
+    known_ids = store.search_paper_ids(search_id)
+    fresh = []
+    pool = []
+    for criterion in search["criteria"] or [search["question"]]:
+        try:
+            pool.extend(s2.search(criterion, limit=25, year=f"{since_year}-"))
+        except Exception:
+            continue
+    for paper in dedupe(pool):
+        if paper.year and paper.year < since_year:
+            continue
+        db_id = store.upsert_paper(paper)
+        if db_id in known_ids:
+            continue
+        score, _reason = llm.score_matches(search["criteria"], [paper])[0]
+        if score >= threshold:
+            store.add_update(search_id, db_id)
+            fresh.append({"paper_id": db_id, "key": paper.key, "title": paper.title, "year": paper.year, "match": score})
+    return fresh
+import tempfile
+import unittest
+from pathlib import Path
+
+from dls.importers import parse_bibtex
+from dls.models import Paper
+from dls.report import papers_to_bibtex, papers_to_csv, papers_to_ris
+from dls.store import Store
+
+BIB = """
+@article{zhang2025autoddg,
+  title = {AutoDDG: Automated Dataset Description Generation},
+  author = {Alice Zhang and Bob Li},
+  year = {2025},
+  journal = {Proc. ACM},
+  doi = {10.1/a}
+}
+@inproceedings{li2026polaris,
+  title = {Polaris: Structured Dataset Descriptions},
+  author = {Bob Li},
+  year = {2026},
+  booktitle = {ICDE},
+  doi = {10.1/b}
+}
+"""
+
+
+class TestBibtex(unittest.TestCase):
+    def test_parse(self):
+        papers = parse_bibtex(BIB)
+        self.assertEqual(len(papers), 2)
+        self.assertEqual(papers[0].authors, ["Alice Zhang", "Bob Li"])
+        self.assertEqual(papers[0].year, 2025)
+        self.assertEqual(papers[0].doi, "10.1/a")
+        self.assertEqual(papers[1].venue, "ICDE")
+
+
+class TestExports(unittest.TestCase):
+    def setUp(self):
+        self.paper = Paper(
+            paper_id="s2-1", title="AutoDDG", year=2025, authors=["Alice Zhang"],
+            venue="Proc. ACM", doi="10.1/a", citation_count=100,
+        )
+        self.paper.key = "Zhang25"
+
+    def test_bibtex(self):
+        out = papers_to_bibtex([self.paper])
+        self.assertIn("@article{Zhang25", out)
+        self.assertIn("doi = {10.1/a}", out)
+
+    def test_csv(self):
+        out = papers_to_csv([self.paper])
+        self.assertIn("Zhang25", out)
+        self.assertIn("AutoDDG", out)
+
+    def test_ris(self):
+        out = papers_to_ris([self.paper])
+        self.assertIn("TY  - JOUR", out)
+        self.assertIn("DO  - 10.1/a", out)
+
+
+class TestStore(unittest.TestCase):
+    def test_roundtrip(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = Store(Path(td) / "t.db")
+            p = Paper(paper_id="s2-9", title="A Paper", year=2024, authors=["Carol Dan"], citation_count=7)
+            db_id = store.upsert_paper(p)
+            self.assertEqual(p.key, "Dan24")
+            store.set_star(db_id, True)
+            store.set_folder(db_id, "core")
+            starred = store.list_papers(starred_only=True)
+            self.assertEqual(len(starred), 1)
+            found = store.find_paper("Dan24")
+            self.assertIsNotNone(found)
+            self.assertEqual(found.title, "A Paper")
+            self.assertEqual(store.find_paper("10.1/none"), None)
+
+
+if __name__ == "__main__":
+    unittest.main()
+470:## Smallest high-value first PR
+471-
+472-**建议只做一件事：让每篇 MATCH 的真实评分来源可追溯，并明确显示降级。**
+473-
+474-范围应保持集中：
+475-
+476-- 为评分结果增加实际方法、模型和降级原因。
+477-- 模型缺项或调用失败时记录 fallback；校验分值为有限的 0–100。
+478-- 将这些信息持久化并通过 API 返回。
+479-- 前端逐篇标注“模型评分”或“启发式评分”，提示本次是否发生降级。
+480-- 增加模型成功、部分缺项、整批失败、非法分数四类离线测试。
+481-
+482-入口为 `dls/llm.py:286–312`，经 `dls/engine.py:52–57`、Store 和 API 传到结果表。这个 PR 无需引入新检索服务或全文基础设施，就能消除当前最直接的评分来源误导，并为后续质量评测提供可靠数据。
+
+exec
+/bin/zsh -lc "python - <<'PY'
+from pathlib import Path
+p=Path('dls/llm.py'); s=p.read_text().replace('import json\\n','import json\\nimport math\\n',1).replace('import time\\n','import time\\nfrom typing import NamedTuple\\n',1)
+pos=s.index('# ---------------------------------------------------------------------------')
+s=s[:pos]+'''class MatchScore(NamedTuple):
+    score: float
+    reason: str
+    source: str
+    fallback: str | None = None
+
+
+def _heuristic_score(criteria: list[str], paper: Paper, fallback: str | None = None) -> MatchScore:
+    score, reason = heuristic_match(criteria, paper)
+    return MatchScore(score, reason, \"heuristic\", fallback)
+
+
+'''+s[pos:]
+s=s.replace('-> list[tuple[float, str]]:', '-> list[MatchScore]:').replace('return [heuristic_match(criteria, p) for p in papers]', 'return [_heuristic_score(criteria, p) for p in papers]').replace('results: list[tuple[float, str]] = []','results: list[MatchScore] = []')
+a=s.index('                by_index: dict[int, tuple[float, str]] = {}'); b=s.index('        return results',a)
+s=s[:a]+'''                if not isinstance(data, dict) or not isinstance(data.get(\"scores\"), list):
+                    raise ValueError(\"Invalid score batch\")
+                by_index: dict[int, dict] = {}
+                duplicates: set[int] = set()
+                for entry in data[\"scores\"]:
+                    if not isinstance(entry, dict):
+                        continue
+                    index = entry.get(\"index\")
+                    if type(index) is not int or not 0 <= index < len(batch):
+                        continue
+                    if index in by_index:
+                        duplicates.add(index)
+                    by_index[index] = entry
+            except Exception:
+                results.extend(_heuristic_score(criteria, p, \"batch_error\") for p in batch)
+                continue
+            for j, p in enumerate(batch):
+                entry = by_index.get(j)
+                if entry is None:
+                    results.append(_heuristic_score(criteria, p, \"missing_index\"))
+                    continue
+                if j in duplicates:
+                    results.append(_heuristic_score(criteria, p, \"duplicate_index\"))
+                    continue
+                score = entry.get(\"score\")
+                try:
+                    valid = type(score) in (int, float) and math.isfinite(score) and 0 <= score <= 100
+                except (ValueError, OverflowError):
+                    valid = False
+                if not valid:
+                    results.append(_heuristic_score(criteria, p, \"invalid_score\"))
+                    continue
+                results.append(MatchScore(float(score), str(entry.get(\"reason\", \"\")), \"llm\"))
+'''+s[b:]; p.write_text(s)
+p=Path('dls/models.py'); s=p.read_text().replace('    match_reason: str | None = None','    match_reason: str | None = None\\n    match_source: str | None = None\\n    match_fallback: str | None = None'); p.write_text(s)
+p=Path('dls/engine.py'); s=p.read_text().replace('from typing import Callable','from collections import Counter\\nfrom typing import Callable').replace('for paper, (score, reason) in zip(papers, scores):\\n            paper.match = score\\n            paper.match_reason = reason','for paper, result in zip(papers, scores):\\n            paper.match = result.score\\n            paper.match_reason = result.reason\\n            paper.match_source = result.source\\n            paper.match_fallback = result.fallback')
+s=s.replace('        self.store.save_results(search_id, pool, included_db_ids, counts, None)','        self._record_match_fallbacks(pool, counts, warnings)\\n        self.store.save_results(search_id, pool, included_db_ids, counts, None)').replace('        self.store.save_results(search_id, scored, included_db_ids, counts, coverage)','        self._record_match_fallbacks(scored, counts, warnings)\\n        self.store.save_results(search_id, scored, included_db_ids, counts, coverage)')
+pos=s.index('    def _snowball('); s=s[:pos]+'''    @staticmethod
+    def _record_match_fallbacks(papers: list[Paper], counts: dict, warnings: list[str]) -> None:
+        fallbacks = dict(Counter(p.match_fallback for p in papers if p.match_fallback))
+        counts[\"match_fallbacks\"] = fallbacks
+        if fallbacks:
+            detail = \", \".join(f\"{reason}: {count}\" for reason, count in sorted(fallbacks.items()))
+            warnings.append(f\"MATCH 评分降级：{sum(fallbacks.values())} 篇论文使用启发式评分（{detail}）。\")
+
+'''+s[pos:]; p.write_text(s)
+p=Path('dls/updates.py'); s=p.read_text().replace('score, _reason = llm.score_matches(search[\"criteria\"], [paper])[0]','score = llm.score_matches(search[\"criteria\"], [paper])[0].score'); p.write_text(s)
+p=Path('dls/store.py'); s=p.read_text().replace('    reason TEXT,','    reason TEXT,\\n    match_source TEXT,\\n    match_fallback TEXT,',1).replace('        self.conn.commit()\\n\\n    # -- projects', '''        for column in (\"match_source\", \"match_fallback\"):
+            if column not in cols:
+                self.conn.execute(f\"ALTER TABLE search_results ADD COLUMN {column} TEXT\")
+        self.conn.commit()
+
+    # -- projects''',1)
+s=s.replace('included, rank, provenance)\\n                   VALUES (?, ?, ?, ?, ?, ?, ?)', 'included, rank, provenance, match_source, match_fallback)\\n                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+s=s.replace('else None, paper.found_via),','else None, paper.found_via, paper.match_source, paper.match_fallback),')
+s=s.replace('sr.provenance AS sr_provenance\\n','sr.provenance AS sr_provenance,\\n                   sr.match_source AS sr_match_source, sr.match_fallback AS sr_match_fallback\\n').replace('            p.match_reason = row[\"sr_reason\"]','            p.match_reason = row[\"sr_reason\"]\\n            p.match_source = row[\"sr_match_source\"]\\n            p.match_fallback = row[\"sr_match_fallback\"]'); p.write_text(s)
+p=Path('dls/api.py'); s=p.read_text().replace('        \"match_reason\": p.match_reason,','        \"match_reason\": p.match_reason,\\n        \"match_source\": p.match_source,\\n        \"match_fallback\": p.match_fallback,'); p.write_text(s)
+p=Path('webapp/js/app.js'); s=p.read_text().replace('  return final;\\n}', '''  for (const warning of final.result?.warnings || []) {
+    const row = document.createElement(\"div\");
+    row.className = \"status-error\";
+    row.textContent = warning;
+    "'$("job-log").appendChild(row);
+  }
+  return final;
+}'"''',1)
+s=s.replace('  const titleLink = p.doi','  const scoring = p.match_source === \"llm\" ? \"模型评分\" : p.match_source === \"heuristic\" ? \"启发式评分\" : \"评分来源未知\";\\n  const titleLink = p.doi',1).replace('      "'${p.match_reason ?'"', '      "'${mode === "search" ? `<div class="paper-sub">${scoring}${p.match_fallback ? ` · 降级原因：${esc(p.match_fallback)}` : ""}</div>` : ""}'"\\n      "'${p.match_reason ?'"',1)
+s=s.replace('  "'$("detail-criteria").innerHTML'"', '''  const fallbacks = c.match_fallbacks || {};
+  const fallbackCount = Object.values(fallbacks).reduce((sum, n) => sum + n, 0);
+  if (fallbackCount) {
+    const warning = document.createElement(\"span\");
+    warning.className = \"status-error\";
+    warning.textContent = "'`MATCH 评分降级：${fallbackCount} 篇候选论文使用启发式评分（${Object.entries(fallbacks).map(([reason, n]) => `${reason}: ${n}`).join("，")}）。`;
+    $("detail-meta").appendChild(warning);
+  }
+  $("detail-criteria").innerHTML'"''',1); p.write_text(s)
+PY" in /Users/paoaiyong/.hermes/cache/scratch/undermind-repo
+ succeeded in 0ms:
+exec
+/bin/zsh -lc "cat > tests/test_match_provenance.py <<'PY'
+\"\"\"Offline scoring failures and provenance persistence; all model calls are mocked.\"\"\"
+
+import json
+import math
+import sqlite3
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from dls.config import Config
+from dls.engine import DeepSearchEngine
+from dls.llm import HeuristicLLM, OpenAIChatLLM
+from dls.models import Paper
+from dls.scoring import heuristic_match
+from dls.store import SCHEMA, Store
+
+
+class TestMatchProvenance(unittest.TestCase):
+    def setUp(self):
+        self.llm = OpenAIChatLLM(Config(llm_api_key=\"offline-test\"))
+        self.papers = [Paper(\"a\", \"Dataset descriptions\"), Paper(\"b\", \"Quantum codes\")]
+        self.criteria = [\"dataset descriptions\"]
+        # Any accidental transport call fails locally instead of reaching the network.
+        self.transport = mock.patch.object(self.llm.session, \"post\", side_effect=AssertionError(\"network forbidden\"))
+        self.transport.start()
+        self.addCleanup(self.transport.stop)
+        self.addCleanup(self.llm.session.close)
+
+    def score(self, entries):
+        with mock.patch.object(self.llm, \"_chat\", return_value=json.dumps({\"scores\": entries})):
+            return self.llm.score_matches(self.criteria, self.papers)
+
+    def assert_fallback(self, result, paper, reason):
+        self.assertEqual(result.source, \"heuristic\")
+        self.assertEqual(result.fallback, reason)
+        self.assertEqual((result.score, result.reason), heuristic_match(self.criteria, paper))
+        self.assertTrue(math.isfinite(result.score))
+        self.assertTrue(0 <= result.score <= 100)
+
+    def test_model_success_and_boundaries(self):
+        scores = self.score([{\"index\": 1, \"score\": 0}, {\"index\": 0, \"score\": 100, \"reason\": \"direct\"}])
+        self.assertEqual(len(scores), 2)
+        self.assertEqual(scores[0], (100.0, \"direct\", \"llm\", None))
+        self.assertEqual(scores[1], (0.0, \"\", \"llm\", None))
+
+    def test_missing_index_only_degrades_missing_paper(self):
+        scores = self.score([{\"index\": 0, \"score\": 87, \"reason\": \"direct\"}])
+        self.assertEqual(scores[0].source, \"llm\")
+        self.assert_fallback(scores[1], self.papers[1], \"missing_index\")
+
+    def test_batch_failure(self):
+        with mock.patch.object(self.llm, \"_chat\", side_effect=RuntimeError(\"offline failure\")):
+            scores = self.llm.score_matches(self.criteria, self.papers)
+        self.assertEqual(len(scores), len(self.papers))
+        for result, paper in zip(scores, self.papers):
+            self.assert_fallback(result, paper, \"batch_error\")
+
+    def test_invalid_score_only_degrades_invalid_paper(self):
+        for value in (170, -1, float(\"nan\"), float(\"inf\"), None, \"bad\", True, \"87\"):
+            with self.subTest(value=value):
+                scores = self.score([{\"index\": 0, \"score\": value}, {\"index\": 1, \"score\": 65}])
+                self.assert_fallback(scores[0], self.papers[0], \"invalid_score\")
+                self.assertEqual(scores[1].source, \"llm\")
+                self.assertEqual(scores[1].score, 65)
+
+    def test_malformed_batch(self):
+        for payload in (\"invalid json\", \"[]\", '{\"scores\": {}}'):
+            with self.subTest(payload=payload), mock.patch.object(self.llm, \"_chat\", return_value=payload):
+                scores = self.llm.score_matches(self.criteria, self.papers)
+                for result, paper in zip(scores, self.papers):
+                    self.assert_fallback(result, paper, \"batch_error\")
+
+    def test_failure_in_one_batch_preserves_later_batch(self):
+        papers = [Paper(str(i), f\"Paper {i}\") for i in range(11)]
+        with mock.patch.object(self.llm, \"_chat\", side_effect=[RuntimeError(\"failed\"), '{\"scores\":[{\"index\":0,\"score\":92}]}']):
+            scores = self.llm.score_matches(self.criteria, papers)
+        self.assertEqual(len(scores), 11)
+        self.assertTrue(all(s.fallback == \"batch_error\" for s in scores[:10]))
+        self.assertEqual(scores[10].source, \"llm\")
+
+    def test_duplicate_and_invalid_indexes_are_not_model_judgments(self):
+        scores = self.score([{\"index\": 0, \"score\": 80}, {\"index\": 0, \"score\": 90}, {\"index\": 1.5, \"score\": 100}])
+        self.assert_fallback(scores[0], self.papers[0], \"duplicate_index\")
+        self.assert_fallback(scores[1], self.papers[1], \"missing_index\")
+
+    def test_explicit_heuristic_is_not_a_fallback(self):
+        scores = HeuristicLLM().score_matches(self.criteria, self.papers)
+        self.assertTrue(all(s.source == \"heuristic\" and s.fallback is None for s in scores))
+
+    def test_engine_store_roundtrip_includes_excluded_fallbacks(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / \"library.db\"
+            store = Store(path)
+            s2 = mock.Mock()
+            s2.search.return_value = self.papers
+            engine = DeepSearchEngine(s2, None, self.llm, store, include_threshold=90)
+            with mock.patch.object(self.llm, \"_chat\", return_value='{\"scores\":[{\"index\":0,\"score\":95}]}'):
+                outcome = engine.run(self.criteria[0], self.criteria, max_rounds=0)
+            self.assertEqual(outcome.found, 1)
+            self.assertEqual(len(outcome.warnings), 1)
+            self.assertIn(\"missing_index\", outcome.warnings[0])
+            self.assertEqual(store.get_search(outcome.search_id)[\"counts\"][\"match_fallbacks\"], {\"missing_index\": 1})
+            # A second search has different provenance for the same paper.
+            engine.llm = HeuristicLLM()
+            second = engine.run(self.criteria[0], self.criteria, max_rounds=0)
+            self.assertEqual(second.warnings, [])
+            store.conn.close()
+            store = Store(path)
+            self.addCleanup(store.conn.close)
+            first = {p.paper_id: p for p in store.search_papers(outcome.search_id, included_only=False)}
+            self.assertEqual((first[\"a\"].match_source, first[\"a\"].match_fallback), (\"llm\", None))
+            self.assertEqual((first[\"b\"].match_source, first[\"b\"].match_fallback), (\"heuristic\", \"missing_index\"))
+            self.assertTrue(all(p.match_source == \"heuristic\" and p.match_fallback is None for p in store.search_papers(second.search_id, included_only=False)))
+
+    def test_trace_reports_fallback(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = Store(Path(td) / \"library.db\")
+            self.addCleanup(store.conn.close)
+            s2 = mock.Mock()
+            s2.citations.return_value = self.papers
+            s2.references.return_value = []
+            engine = DeepSearchEngine(s2, None, self.llm, store)
+            with mock.patch.object(self.llm, \"_chat\", side_effect=RuntimeError(\"failed\")):
+                outcome = engine.trace(Paper(\"seed\", \"Seed paper\"), hops=1)
+            self.assertIn(\"batch_error: 2\", outcome.warnings[0])
+            self.assertEqual(store.get_search(outcome.search_id)[\"counts\"][\"match_fallbacks\"], {\"batch_error\": 2})
+
+    def test_old_database_migration_preserves_unknown_source(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / \"old.db\"
+            conn = sqlite3.connect(path)
+            conn.executescript(SCHEMA.replace(\"    match_source TEXT,\\n\", \"\").replace(\"    match_fallback TEXT,\\n\", \"\"))
+            conn.close()
+            store = Store(path)
+            sid = store.create_search(\"default\", \"q\", [\"q\"], {})
+            pid = store.upsert_paper(self.papers[0])
+            store.conn.execute(\"INSERT INTO search_results (search_id, paper_id, match, included) VALUES (?, ?, 80, 1)\", (sid, pid))
+            store.conn.commit()
+            store.conn.close()
+            store = Store(path)  # Migration remains safe on repeated opens.
+            self.addCleanup(store.conn.close)
+            paper = store.search_papers(sid)[0]
+            self.assertIsNone(paper.match_source)
+            self.assertIsNone(paper.match_fallback)
+PY
+python -m unittest discover -s tests" in /Users/paoaiyong/.hermes/cache/scratch/undermind-repo
+ succeeded in 625ms:
+...../Users/paoaiyong/.hermes/tools/python-3.14.9+20261021-darwin-arm64/lib/python3.14/typing.py:1352: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105fdb880>
+  self.__args__ = tuple(... if a is _TypingEllipsis else
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/tools/python-3.14.9+20261021-darwin-arm64/lib/python3.14/typing.py:1352: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x1063c6980>
+  self.__args__ = tuple(... if a is _TypingEllipsis else
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/tools/python-3.14.9+20261021-darwin-arm64/lib/python3.14/typing.py:1352: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x1063e5300>
+  self.__args__ = tuple(... if a is _TypingEllipsis else
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/tools/python-3.14.9+20261021-darwin-arm64/lib/python3.14/typing.py:1352: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x1063f7c40>
+  self.__args__ = tuple(... if a is _TypingEllipsis else
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/tools/python-3.14.9+20261021-darwin-arm64/lib/python3.14/typing.py:1352: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x1063f75b0>
+  self.__args__ = tuple(... if a is _TypingEllipsis else
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+............/Users/paoaiyong/.hermes/tools/python-3.14.9+20261021-darwin-arm64/lib/python3.14/unittest/mock.py:1234: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x1063e49a0>
+  def _execute_mock_call(self, /, *args, **kwargs):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/tools/python-3.14.9+20261021-darwin-arm64/lib/python3.14/unittest/mock.py:1234: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x1063c6980>
+  def _execute_mock_call(self, /, *args, **kwargs):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/tools/python-3.14.9+20261021-darwin-arm64/lib/python3.14/unittest/mock.py:1234: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105fdb880>
+  def _execute_mock_call(self, /, *args, **kwargs):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/tools/python-3.14.9+20261021-darwin-arm64/lib/python3.14/unittest/mock.py:1234: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x1063f7b50>
+  def _execute_mock_call(self, /, *args, **kwargs):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.................
+----------------------------------------------------------------------
+Ran 34 tests in 0.333s
+
+OK
+
+exec
+/bin/zsh -lc 'git diff --stat; git diff -- dls/llm.py dls/engine.py dls/store.py webapp/js/app.js; command -v node; cat pyproject.toml' in /Users/paoaiyong/.hermes/cache/scratch/undermind-repo
+ succeeded in 0ms:
+ dls/api.py       |  2 ++
+ dls/engine.py    | 19 +++++++++++++++---
+ dls/llm.py       | 61 ++++++++++++++++++++++++++++++++++++++++++++++----------
+ dls/models.py    |  2 ++
+ dls/store.py     | 16 +++++++++++----
+ dls/updates.py   |  2 +-
+ webapp/js/app.js | 16 +++++++++++++++
+ 7 files changed, 99 insertions(+), 19 deletions(-)
+diff --git a/dls/engine.py b/dls/engine.py
+index a8c90f5..f89a73f 100644
+--- a/dls/engine.py
++++ b/dls/engine.py
+@@ -8,6 +8,7 @@ tests can all observe the run.
+ 
+ from __future__ import annotations
+ 
++from collections import Counter
+ from typing import Callable
+ 
+ from .clients.openalex import OpenAlexClient
+@@ -51,11 +52,21 @@ class DeepSearchEngine:
+     # ------------------------------------------------------------------
+     def _score(self, criteria: list[str], papers: list[Paper]) -> list[Paper]:
+         scores = self.llm.score_matches(criteria, papers)
+-        for paper, (score, reason) in zip(papers, scores):
+-            paper.match = score
+-            paper.match_reason = reason
++        for paper, result in zip(papers, scores):
++            paper.match = result.score
++            paper.match_reason = result.reason
++            paper.match_source = result.source
++            paper.match_fallback = result.fallback
+         return papers
+ 
++    @staticmethod
++    def _record_match_fallbacks(papers: list[Paper], counts: dict, warnings: list[str]) -> None:
++        fallbacks = dict(Counter(p.match_fallback for p in papers if p.match_fallback))
++        counts["match_fallbacks"] = fallbacks
++        if fallbacks:
++            detail = ", ".join(f"{reason}: {count}" for reason, count in sorted(fallbacks.items()))
++            warnings.append(f"MATCH 评分降级：{sum(fallbacks.values())} 篇论文使用启发式评分（{detail}）。")
++
+     def _snowball(self, seeds: list[Paper], limit_per_seed: int = 30) -> list[Paper]:
+         out: list[Paper] = []
+         for seed in seeds:
+@@ -166,6 +177,7 @@ class DeepSearchEngine:
+             "excluded": len(pool) - len(included),
+             "candidates": len(pool),
+         }
++        self._record_match_fallbacks(pool, counts, warnings)
+         self.store.save_results(search_id, pool, included_db_ids, counts, None)
+         progress("Done", f"{counts['found']} connected papers · {counts['excluded']} excluded")
+         return SearchOutcome(
+@@ -299,6 +311,7 @@ class DeepSearchEngine:
+             "excluded": len(scored) - len(included),
+             "candidates": len(scored),
+         }
++        self._record_match_fallbacks(scored, counts, warnings)
+         self.store.save_results(search_id, scored, included_db_ids, counts, coverage)
+         # save_results upserts again internally for any paper missing db_id; keep ids consistent.
+         progress("Done", f"{counts['found']} papers · {counts['with_full_text']} with full text · {counts['excluded']} excluded")
+diff --git a/dls/llm.py b/dls/llm.py
+index 2cdda82..0fc9370 100644
+--- a/dls/llm.py
++++ b/dls/llm.py
+@@ -21,10 +21,12 @@ endpoint never kills a search run.
+ from __future__ import annotations
+ 
+ import json
++import math
+ import re
+ import subprocess
+ import sys
+ import time
++from typing import NamedTuple
+ 
+ import requests
+ 
+@@ -33,6 +35,18 @@ from .models import Paper
+ from .scoring import content_tokens, heuristic_match
+ 
+ 
++class MatchScore(NamedTuple):
++    score: float
++    reason: str
++    source: str
++    fallback: str | None = None
++
++
++def _heuristic_score(criteria: list[str], paper: Paper, fallback: str | None = None) -> MatchScore:
++    score, reason = heuristic_match(criteria, paper)
++    return MatchScore(score, reason, "heuristic", fallback)
++
++
+ # ---------------------------------------------------------------------------
+ # Heuristic backend
+ # ---------------------------------------------------------------------------
+@@ -66,8 +80,8 @@ class HeuristicLLM:
+         return criteria
+ 
+     # -- scoring ------------------------------------------------------------
+-    def score_matches(self, criteria: list[str], papers: list[Paper]) -> list[tuple[float, str]]:
+-        return [heuristic_match(criteria, p) for p in papers]
++    def score_matches(self, criteria: list[str], papers: list[Paper]) -> list[MatchScore]:
++        return [_heuristic_score(criteria, p) for p in papers]
+ 
+     # -- reflection (adapting stage) -----------------------------------------
+     def reflect(self, criteria: list[str], top_papers: list[Paper], round_no: int) -> dict:
+@@ -283,8 +297,8 @@ class OpenAIChatLLM(HeuristicLLM):
+             pass
+         return super().make_criteria(question, answers)
+ 
+-    def score_matches(self, criteria: list[str], papers: list[Paper]) -> list[tuple[float, str]]:
+-        results: list[tuple[float, str]] = []
++    def score_matches(self, criteria: list[str], papers: list[Paper]) -> list[MatchScore]:
++        results: list[MatchScore] = []
+         batch_size = 10
+         for i in range(0, len(papers), batch_size):
+             batch = papers[i : i + batch_size]
+@@ -301,14 +315,39 @@ class OpenAIChatLLM(HeuristicLLM):
+                     json_mode=True,
+                 )
+                 data = self._parse_json(out)
+-                by_index: dict[int, tuple[float, str]] = {}
+-                if isinstance(data, dict):
+-                    for s in data.get("scores") or []:
+-                        by_index[int(s["index"])] = (float(s["score"]), str(s.get("reason", "")))
+-                for j, p in enumerate(batch):
+-                    results.append(by_index.get(j) or heuristic_match(criteria, p))
++                if not isinstance(data, dict) or not isinstance(data.get("scores"), list):
++                    raise ValueError("Invalid score batch")
++                by_index: dict[int, dict] = {}
++                duplicates: set[int] = set()
++                for entry in data["scores"]:
++                    if not isinstance(entry, dict):
++                        continue
++                    index = entry.get("index")
++                    if type(index) is not int or not 0 <= index < len(batch):
++                        continue
++                    if index in by_index:
++                        duplicates.add(index)
++                    by_index[index] = entry
+             except Exception:
+-                results.extend(heuristic_match(criteria, p) for p in batch)
++                results.extend(_heuristic_score(criteria, p, "batch_error") for p in batch)
++                continue
++            for j, p in enumerate(batch):
++                entry = by_index.get(j)
++                if entry is None:
++                    results.append(_heuristic_score(criteria, p, "missing_index"))
++                    continue
++                if j in duplicates:
++                    results.append(_heuristic_score(criteria, p, "duplicate_index"))
++                    continue
++                score = entry.get("score")
++                try:
++                    valid = type(score) in (int, float) and math.isfinite(score) and 0 <= score <= 100
++                except (ValueError, OverflowError):
++                    valid = False
++                if not valid:
++                    results.append(_heuristic_score(criteria, p, "invalid_score"))
++                    continue
++                results.append(MatchScore(float(score), str(entry.get("reason", "")), "llm"))
+         return results
+ 
+     def reflect(self, criteria: list[str], top_papers: list[Paper], round_no: int) -> dict:
+diff --git a/dls/store.py b/dls/store.py
+index 41dccf2..ec49d2b 100644
+--- a/dls/store.py
++++ b/dls/store.py
+@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS search_results (
+     paper_id INTEGER NOT NULL REFERENCES papers(id),
+     match REAL,
+     reason TEXT,
++    match_source TEXT,
++    match_fallback TEXT,
+     included INTEGER NOT NULL DEFAULT 0,
+     rank INTEGER,
+     PRIMARY KEY (search_id, paper_id)
+@@ -87,6 +89,9 @@ class Store:
+         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(search_results)")}
+         if "provenance" not in cols:
+             self.conn.execute("ALTER TABLE search_results ADD COLUMN provenance TEXT")
++        for column in ("match_source", "match_fallback"):
++            if column not in cols:
++                self.conn.execute(f"ALTER TABLE search_results ADD COLUMN {column} TEXT")
+         self.conn.commit()
+ 
+     # -- projects ---------------------------------------------------------
+@@ -232,9 +237,9 @@ class Store:
+             if is_included:
+                 rank += 1
+             self.conn.execute(
+-                """INSERT OR REPLACE INTO search_results (search_id, paper_id, match, reason, included, rank, provenance)
+-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+-                (search_id, db_id, paper.match, paper.match_reason, 1 if is_included else 0, rank if is_included else None, paper.found_via),
++                """INSERT OR REPLACE INTO search_results (search_id, paper_id, match, reason, included, rank, provenance, match_source, match_fallback)
++                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
++                (search_id, db_id, paper.match, paper.match_reason, 1 if is_included else 0, rank if is_included else None, paper.found_via, paper.match_source, paper.match_fallback),
+             )
+         self.conn.execute(
+             "UPDATE searches SET counts = ?, coverage = ? WHERE id = ?",
+@@ -263,7 +268,8 @@ class Store:
+ 
+     def search_papers(self, search_id: int, included_only: bool = True) -> list[Paper]:
+         sql = """
+-            SELECT p.*, sr.match AS sr_match, sr.reason AS sr_reason, sr.rank AS sr_rank, sr.provenance AS sr_provenance
++            SELECT p.*, sr.match AS sr_match, sr.reason AS sr_reason, sr.rank AS sr_rank, sr.provenance AS sr_provenance,
++                   sr.match_source AS sr_match_source, sr.match_fallback AS sr_match_fallback
+             FROM search_results sr JOIN papers p ON p.id = sr.paper_id
+             WHERE sr.search_id = ?
+         """
+@@ -275,6 +281,8 @@ class Store:
+             p = self._row_to_paper(row)
+             p.match = row["sr_match"]
+             p.match_reason = row["sr_reason"]
++            p.match_source = row["sr_match_source"]
++            p.match_fallback = row["sr_match_fallback"]
+             p.found_via = row["sr_provenance"]
+             papers.append(p)
+         return papers
+diff --git a/webapp/js/app.js b/webapp/js/app.js
+index 182cbf0..8bdeeb1 100644
+--- a/webapp/js/app.js
++++ b/webapp/js/app.js
+@@ -100,6 +100,12 @@ async function runJob(jobId, label) {
+   status.className = final.type === "done" ? "status-done" : "status-error";
+   status.textContent = final.type === "done" ? "✓ 完成" : `✗ ${final.error || "失败"}`;
+   (headEl || $("job-log")).appendChild(status);
++  for (const warning of final.result?.warnings || []) {
++    const row = document.createElement("div");
++    row.className = "status-error";
++    row.textContent = warning;
++    $("job-log").appendChild(row);
++  }
+   return final;
+ }
+ 
+@@ -152,6 +158,7 @@ function paperRow(p, mode) {
+   const first = mode === "library"
+     ? `<span class="key">${esc(p.key || "")}</span>`
+     : `<span class="score ${scoreClass(p.match ?? 0)}">${p.match != null ? p.match.toFixed(0) : "–"}</span>`;
++  const scoring = p.match_source === "llm" ? "模型评分" : p.match_source === "heuristic" ? "启发式评分" : "评分来源未知";
+   const titleLink = p.doi
+     ? `<a href="https://doi.org/${esc(p.doi)}" target="_blank" rel="noopener">${esc(p.title)}</a>`
+     : esc(p.title);
+@@ -163,6 +170,7 @@ function paperRow(p, mode) {
+     <td>
+       <div class="paper-title">${titleLink}${via}</div>
+       <div class="paper-sub">${esc(authors)} · ${p.year ?? "n.d."} · ${esc(p.venue || "")}${pdf}</div>
++      ${mode === "search" ? `<div class="paper-sub">${scoring}${p.match_fallback ? ` · 降级原因：${esc(p.match_fallback)}` : ""}</div>` : ""}
+       ${p.match_reason ? `<div class="paper-reason">${esc(p.match_reason)}</div>` : ""}
+     </td>
+     <td>${p.citations_per_year ?? ""}</td>
+@@ -200,6 +208,14 @@ async function openSearch(id) {
+   $("detail-meta").innerHTML =
+     `<span>入选 ${c.found ?? s.papers.length} 篇</span><span>全文 ${c.with_full_text ?? 0}</span>` +
+     `<span>排除 ${c.excluded ?? 0}</span><span>候选 ${c.candidates ?? "?"}</span><span>${cov}</span>`;
++  const fallbacks = c.match_fallbacks || {};
++  const fallbackCount = Object.values(fallbacks).reduce((sum, n) => sum + n, 0);
++  if (fallbackCount) {
++    const warning = document.createElement("span");
++    warning.className = "status-error";
++    warning.textContent = `MATCH 评分降级：${fallbackCount} 篇候选论文使用启发式评分（${Object.entries(fallbacks).map(([reason, n]) => `${reason}: ${n}`).join("，")}）。`;
++    $("detail-meta").appendChild(warning);
++  }
+   $("detail-criteria").innerHTML = (s.criteria || []).map((x) => `<span class="chip">${esc(x)}</span>`).join("");
+   const body = $("papers-body");
+   body.innerHTML = "";
+/Users/paoaiyong/.hermes/tools/node-26.12.1-darwin-arm64/bin/node
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deep-literature-search"
+version = "0.1.0"
+description = "Undermind-style deep literature search agent: iterative search over Semantic Scholar / OpenAlex, citation snowballing, per-paper match scoring, and cited reports."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+api = ["fastapi>=0.110", "uvicorn>=0.29", "httpx>=0.27"]
+
+[project.scripts]
+dls = "dls.cli:main"
+
+[tool.setuptools]
+packages = ["dls", "dls.clients"]
+
+codex
+四类核心离线测试已通过，另外验证了跨批次失败隔离、旧数据库迁移、同篇论文在不同搜索中的来源隔离，以及被排除论文的降级提示。接下来补查 API 返回字段和前端语法，再运行最终完整测试。
+exec
+/bin/zsh -lc "python - <<'PY'
+from pathlib import Path
+p=Path('tests/test_api.py'); s=p.read_text().replace('    paper.match_reason = \"directly on topic\"','    paper.match_reason = \"directly on topic\"\\n    paper.match_source = \"llm\"',1).replace('        self.assertEqual(detail[\"papers\"][0][\"match\"], 92.0)','        self.assertEqual(detail[\"papers\"][0][\"match\"], 92.0)\\n        self.assertEqual(detail[\"papers\"][0][\"match_source\"], \"llm\")\\n        self.assertIsNone(detail[\"papers\"][0][\"match_fallback\"])',1)
+pos=s.index('    def test_search_events_stream(self):'); s=s[:pos]+'''    def test_search_serializes_fallback_provenance(self):
+        store = self.ctx.store
+        sid = store.create_search(\"default\", \"q\", [\"q\"], {})
+        paper = _paper()
+        paper.match = 45.0
+        paper.match_source = \"heuristic\"
+        paper.match_fallback = \"invalid_score\"
+        store.save_results(sid, [paper], set(), {\"match_fallbacks\": {\"invalid_score\": 1}}, None)
+        detail = self.client.get(f\"/api/searches/{sid}\", params={\"included_only\": False}).json()
+        self.assertEqual(detail[\"papers\"][0][\"match_source\"], \"heuristic\")
+        self.assertEqual(detail[\"papers\"][0][\"match_fallback\"], \"invalid_score\")
+        self.assertEqual(detail[\"counts\"][\"match_fallbacks\"], {\"invalid_score\": 1})
+
+'''+s[pos:]; p.write_text(s)
+PY
+node --check webapp/js/app.js
+ git diff --check
+python -m unittest discover -s tests > /tmp/score-provenance-unittest.log 2>&1
+cat /tmp/score-provenance-unittest.log" in /Users/paoaiyong/.hermes/cache/scratch/undermind-repo
+ succeeded in 795ms:
+...../Users/paoaiyong/.hermes/tools/python-3.14.9+20261021-darwin-arm64/lib/python3.14/typing.py:1352: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x104623e20>
+  self.__args__ = tuple(... if a is _TypingEllipsis else
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/tools/python-3.14.9+20261021-darwin-arm64/lib/python3.14/typing.py:1352: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x104b524d0>
+  self.__args__ = tuple(... if a is _TypingEllipsis else
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/tools/python-3.14.9+20261021-darwin-arm64/lib/python3.14/typing.py:1352: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x104b6ce50>
+  self.__args__ = tuple(... if a is _TypingEllipsis else
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/tools/python-3.14.9+20261021-darwin-arm64/lib/python3.14/typing.py:1352: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x104b7f1f0>
+  self.__args__ = tuple(... if a is _TypingEllipsis else
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/tools/python-3.14.9+20261021-darwin-arm64/lib/python3.14/typing.py:1352: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x104b7ff10>
+  self.__args__ = tuple(... if a is _TypingEllipsis else
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+............../Users/paoaiyong/.hermes/tools/python-3.14.9+20261021-darwin-arm64/lib/python3.14/unittest/mock.py:2259: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x104ad8400>
+  def __init__(self, name, parent):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/tools/python-3.14.9+20261021-darwin-arm64/lib/python3.14/unittest/mock.py:2259: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x104b7ff10>
+  def __init__(self, name, parent):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/tools/python-3.14.9+20261021-darwin-arm64/lib/python3.14/unittest/mock.py:2259: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x104b6ce50>
+  def __init__(self, name, parent):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/paoaiyong/.hermes/tools/python-3.14.9+20261021-darwin-arm64/lib/python3.14/unittest/mock.py:2259: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x104c133d0>
+  def __init__(self, name, parent):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+................
+----------------------------------------------------------------------
+Ran 35 tests in 0.332s
+
+OK
+
+exec
+/bin/zsh -lc "git status --short; git branch --show-current; rg -n 'score_matches' --glob '*.py'" in /Users/paoaiyong/.hermes/cache/scratch/undermind-repo
+ succeeded in 0ms:
+ M dls/api.py
+ M dls/engine.py
+ M dls/llm.py
+ M dls/models.py
+ M dls/store.py
+ M dls/updates.py
+ M tests/test_api.py
+ M webapp/js/app.js
+?? CODEX_REVIEW.md
+?? codex_impl.log
+?? codex_review.log
+?? tests/test_match_provenance.py
+feat/score-provenance
+tests/test_match_provenance.py:32:            return self.llm.score_matches(self.criteria, self.papers)
+tests/test_match_provenance.py:54:            scores = self.llm.score_matches(self.criteria, self.papers)
+tests/test_match_provenance.py:70:                scores = self.llm.score_matches(self.criteria, self.papers)
+tests/test_match_provenance.py:77:            scores = self.llm.score_matches(self.criteria, papers)
+tests/test_match_provenance.py:88:        scores = HeuristicLLM().score_matches(self.criteria, self.papers)
+dls/engine.py:54:        scores = self.llm.score_matches(criteria, papers)
+dls/llm.py:83:    def score_matches(self, criteria: list[str], papers: list[Paper]) -> list[MatchScore]:
+dls/llm.py:300:    def score_matches(self, criteria: list[str], papers: list[Paper]) -> list[MatchScore]:
+dls/updates.py:38:        score = llm.score_matches(search["criteria"], [paper])[0].score
+
+codex
+已在 `feat/score-provenance` 完成：评分来源及降级原因贯通存储、API 和页面，非法分数逐篇降级，完成处显示降级提示。未创建 PR、未 commit。
+
+改动文件：
+
+- `dls/llm.py`
+- `dls/models.py`
+- `dls/engine.py`
+- `dls/store.py`
+- `dls/api.py`
+- `dls/updates.py`（适配评分返回结构）
+- `webapp/js/app.js`
+- `tests/test_api.py`
+- `tests/test_match_provenance.py`
+
+`python -m unittest discover -s tests` 全部通过，结果原文：
+
+```text
+----------------------------------------------------------------------
+Ran 35 tests in 0.332s
+
+OK
+```
+
+[完整测试输出原文（含数据库连接 ResourceWarning）](/tmp/score-provenance-unittest.log)
+
+前端语法检查和 `git diff --check` 均通过。
+tokens used
+61,589
+已在 `feat/score-provenance` 完成：评分来源及降级原因贯通存储、API 和页面，非法分数逐篇降级，完成处显示降级提示。未创建 PR、未 commit。
+
+改动文件：
+
+- `dls/llm.py`
+- `dls/models.py`
+- `dls/engine.py`
+- `dls/store.py`
+- `dls/api.py`
+- `dls/updates.py`（适配评分返回结构）
+- `webapp/js/app.js`
+- `tests/test_api.py`
+- `tests/test_match_provenance.py`
+
+`python -m unittest discover -s tests` 全部通过，结果原文：
+
+```text
+----------------------------------------------------------------------
+Ran 35 tests in 0.332s
+
+OK
+```
+
+[完整测试输出原文（含数据库连接 ResourceWarning）](/tmp/score-provenance-unittest.log)
+
+前端语法检查和 `git diff --check` 均通过。
