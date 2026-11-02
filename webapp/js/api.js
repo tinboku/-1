@@ -15,6 +15,7 @@ export const api = {
   getSearch: id => req('GET', `/api/searches/${id}`),
   launchSearch: payload => req('POST', '/api/searches', payload),
   launchTrace: payload => req('POST', '/api/trace', payload),
+  readFulltext: (searchId, paperId) => req('POST', `/api/searches/${searchId}/papers/${paperId}/fulltext`, {}),
   launchReport: (id, focus) => req('POST', `/api/searches/${id}/report`, { focus: focus || null }),
   launchExtract: (id, columns, top) => req('POST', `/api/searches/${id}/extract`, { columns, top: top || 10 }),
   launchUpdates: id => req('POST', `/api/searches/${id}/updates`, {}),

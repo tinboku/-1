@@ -12,7 +12,7 @@ import time
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 try:
     from fastapi.testclient import TestClient
@@ -330,6 +330,52 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(star.json()["starred"], True)
         starred = self.client.get("/api/papers", params={"starred": True}).json()
         self.assertEqual(len(starred), 1)
+
+    def test_fulltext_failure_and_cached_success(self):
+        sid = self._search()["result"]["search_id"]
+        paper = self.ctx.store.search_papers(sid)[0]
+        self.ctx.store.conn.execute("UPDATE papers SET oa_pdf = ? WHERE id = ?",
+                                    ("https://example.org/p.pdf", paper.db_id))
+        self.ctx.store.conn.commit()
+        path = f"/api/searches/{sid}/papers/{paper.db_id}/fulltext"
+        with patch("dls.fulltext.download_pdf", return_value=(None, "download timeout")):
+            response = self.client.post(path)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["fulltext_status"], "failed")
+        self.assertEqual(response.json()["fulltext_error"], "download timeout")
+        with patch("dls.fulltext.download_pdf", return_value=(b"%PDF-test", None)), \
+                patch("dls.fulltext.extract_text", return_value=(None, "pypdf not installed")):
+            response = self.client.post(path)
+        self.assertEqual(response.json()["fulltext_error"], "pypdf not installed")
+        with patch("dls.fulltext.download_pdf", return_value=(b"%PDF-test", None)), \
+                patch("dls.fulltext.extract_text", return_value=("Results\nImproved accuracy.", None)):
+            response = self.client.post(path)
+        self.assertEqual(response.json()["fulltext_status"], "ok")
+        with patch("dls.fulltext.download_pdf") as download:
+            self.assertEqual(self.client.post(path).json()["fulltext_status"], "ok")
+        download.assert_not_called()
+        detail = self.client.get(f"/api/searches/{sid}").json()
+        self.assertEqual(detail["papers"][0]["fulltext_status"], "ok")
+
+    def test_fulltext_rejects_nonincluded_and_missing_pdf(self):
+        sid = self._search()["result"]["search_id"]
+        pid = self.ctx.store.search_papers(sid)[0].db_id
+        path = f"/api/searches/{sid}/papers/{pid}/fulltext"
+        self.assertEqual(self.client.post(path).status_code, 422)
+        self.ctx.store.conn.execute("UPDATE search_results SET included = 0 WHERE search_id = ?", (sid,))
+        self.ctx.store.conn.commit()
+        self.assertEqual(self.client.post(path).status_code, 404)
+
+    def test_report_job_returns_verification_summary(self):
+        sid = self._search()["result"]["search_id"]
+        self.ctx.llm.write_report = lambda *args: "# Report\n[Zhang25] and [Fake25]"
+        launched = self.client.post(f"/api/searches/{sid}/report", json={})
+        job = _wait_job(self.client, launched.json()["job_id"])
+        self.assertEqual(job["status"], "done", job)
+        summary = job["result"]["verification"]
+        self.assertEqual(summary["total"], 2)
+        self.assertEqual(summary["traceable"], 1)
+        self.assertEqual(summary["untraceable"], 1)
 
     def test_unknown_job_404(self):
         self.assertEqual(self.client.get("/api/jobs/nope").status_code, 404)

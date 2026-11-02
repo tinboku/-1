@@ -232,16 +232,40 @@ function paperRow(p, mode) {
   const titleLink = esc(p.title);
   const authors = (p.authors || []).slice(0, 4).join(", ") + ((p.authors || []).length > 4 ? " et al." : "");
   const via = p.found_via && p.found_via !== "search" ? `<span class="via">← ${esc(p.found_via)}</span>` : "";
+  const fulltext = mode === "search" && p.open_access_pdf
+    ? `<button class="fulltext-btn">读取全文</button> <span class="fulltext-status" role="status"></span>` : "";
   const pdf = p.open_access_pdf ? ` · <a href="${safeUrl(p.open_access_pdf)}" target="_blank" rel="noopener">PDF</a>` : "";
   tr.innerHTML = `
     <td>${first}</td>
     <td>
       <div class="paper-title">${titleLink}${via}</div>
-      <div class="paper-sub">${esc(authors)} · ${p.year ?? "n.d."} · ${esc(p.venue || "")}${pdf}</div>
+      <div class="paper-sub">${esc(authors)} · ${p.year ?? "n.d."} · ${esc(p.venue || "")}${pdf} ${fulltext}</div>
       ${p.match_reason ? `<div class="paper-reason">${esc(p.match_reason)}</div>` : ""}
     </td>
     <td>${p.citations_per_year ?? ""}</td>
     <td><button class="star-btn ${p.starred ? "on" : ""}" title="收藏">★</button></td>`;
+  const readButton = tr.querySelector(".fulltext-btn");
+  if (readButton) {
+    const status = tr.querySelector(".fulltext-status");
+    const updateStatus = () => {
+      status.textContent = p.fulltext_status === 'ok' ? '全文已读取' :
+        p.fulltext_status === 'failed' ? `读取失败：${p.fulltext_error || '原因未记录'}` : '全文未读取';
+      readButton.disabled = p.fulltext_status === 'ok';
+    };
+    updateStatus();
+    const searchId = state.searchId;
+    readButton.addEventListener('click', async () => {
+      readButton.disabled = true;
+      status.textContent = '正在读取全文…';
+      try {
+        Object.assign(p, await api.readFulltext(searchId, p.db_id));
+        updateStatus();
+      } catch (err) {
+        status.textContent = `读取失败：${err.message}`;
+        readButton.disabled = false;
+      }
+    });
+  }
   const star = tr.querySelector(".star-btn");
   star.setAttribute('aria-label', '收藏论文');
   star.setAttribute('aria-pressed', String(!!p.starred));
@@ -281,7 +305,7 @@ async function openSearch(id) {
     ? ` · 覆盖估计 ≈${Math.round((s.coverage.estimated_coverage || 0) * 100)}%（约 ${s.coverage.estimated_total_relevant} 篇相关）`
     : "";
   $("detail-meta").innerHTML =
-    `<span>入选 ${c.found ?? s.papers.length} 篇</span><span>全文 ${c.with_full_text ?? 0}</span>` +
+    `<span>入选 ${c.found ?? s.papers.length} 篇</span><span>OA PDF ${c.with_full_text ?? 0}</span>` +
     `<span>排除 ${c.excluded ?? 0}</span><span>候选 ${c.candidates ?? "?"}</span><span>${cov}</span>`;
   $("detail-criteria").innerHTML = (s.criteria || []).map((x) => `<span class="chip">${esc(x)}</span>`).join("");
   const body = $("papers-body");

@@ -193,6 +193,8 @@ def paper_dict(p: Paper) -> dict:
         "url": p.url,
         "open_access_pdf": p.open_access_pdf,
         "has_full_text": p.has_full_text,
+        "fulltext_status": p.fulltext_status,
+        "fulltext_error": p.fulltext_error,
         "source": p.source,
         "match": p.match,
         "match_reason": p.match_reason,
@@ -353,15 +355,41 @@ def create_app(ctx=None) -> FastAPI:
         return {"job_id": job.id}
 
     # -- per-search actions ----------------------------------------------------
+    @app.post("/api/searches/{search_id}/papers/{db_id}/fulltext")
+    def read_paper_fulltext(search_id: int, db_id: int) -> dict:
+        from .fulltext import download_pdf, extract_text
+
+        with locked():
+            paper = next((p for p in ctx.store.search_papers(search_id)
+                          if p.db_id == db_id), None)
+            if paper is None:
+                raise HTTPException(404, "included paper not found in this search")
+            cached, _ = ctx.store.read_fulltext(paper)
+        if cached:
+            return paper_dict(paper)
+        if not paper.open_access_pdf:
+            raise HTTPException(422, "paper has no open_access_pdf URL")
+        pdf, error = download_pdf(paper)
+        text = None
+        if pdf is not None:
+            text, error = extract_text(pdf)
+        with locked():
+            try:
+                paper = ctx.store.save_fulltext(db_id, text, error)
+            except OSError as exc:
+                paper = ctx.store.save_fulltext(db_id, None, f"full text storage failed: {exc}")
+        return paper_dict(paper)
+
     @app.post("/api/searches/{search_id}/report", status_code=202)
     def launch_report(search_id: int, body: ReportIn) -> dict:
-        from .report import generate_report
+        from .report import generate_report, verify_report
 
         def work(job: Job) -> dict:
             job.emit("Writing report", f"search #{search_id}")
             with locked():
-                file_id, _md = generate_report(ctx.store, search_id, ctx.llm, focus=body.focus)
-            return {"file_id": file_id}
+                file_id, md = generate_report(ctx.store, search_id, ctx.llm, focus=body.focus)
+                verification = verify_report(md, ctx.store.search_papers(search_id))
+            return {"file_id": file_id, "verification": verification}
 
         job = jobs.submit("report", work, search_id=search_id)
         return {"job_id": job.id}
