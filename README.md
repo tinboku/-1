@@ -36,6 +36,8 @@ pip install -e .
 # → launch → iterative search with citation snowballing → ranked results
 dls search "Methods for automatically generating natural-language descriptions of tabular datasets using large language models"
 
+dls trace 10.1145/3786626         # expand from ONE seed paper along its citation graph
+                                  # (references + citations), score and summarize the neighbourhood
 dls report 1                      # cited Markdown report for search #1
 dls ask 1 "which papers use table profiling?"     # follow-up chat over the results
 dls extract 1 --columns paper,year,method,"output type"   # comparison table

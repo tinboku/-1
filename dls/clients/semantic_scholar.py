@@ -20,6 +20,11 @@ FIELDS = (
     "title,abstract,year,authors,venue,citationCount,referenceCount,"
     "externalIds,openAccessPdf,url,tldr"
 )
+# Edge endpoints (citations/references) reject `tldr` on nested papers.
+FIELDS_EDGE = (
+    "title,abstract,year,authors,venue,citationCount,referenceCount,"
+    "externalIds,openAccessPdf,url"
+)
 
 
 class RateLimited(Exception):
@@ -95,7 +100,7 @@ class SemanticScholarClient:
     def citations(self, paper_id: str, limit: int = 50) -> list[Paper]:
         data = self._get(
             f"/paper/{paper_id}/citations",
-            {"limit": min(limit, 1000), "fields": f"citingPaper.{FIELDS}".replace(",", ",citingPaper.")},
+            {"limit": min(limit, 1000), "fields": f"citingPaper.{FIELDS_EDGE}".replace(",", ",citingPaper.")},
         )
         out = []
         for edge in data.get("data") or []:
@@ -107,7 +112,7 @@ class SemanticScholarClient:
     def references(self, paper_id: str, limit: int = 50) -> list[Paper]:
         data = self._get(
             f"/paper/{paper_id}/references",
-            {"limit": min(limit, 1000), "fields": f"citedPaper.{FIELDS}".replace(",", ",citedPaper.")},
+            {"limit": min(limit, 1000), "fields": f"citedPaper.{FIELDS_EDGE}".replace(",", ",citedPaper.")},
         )
         out = []
         for edge in data.get("data") or []:

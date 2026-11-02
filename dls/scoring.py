@@ -78,6 +78,22 @@ def _merge_into(dst: Paper, src: Paper) -> None:
         dst.url = src.url
 
 
+def identity_keys(paper: Paper) -> set[str]:
+    """All identity keys a paper can be recognized by across sources.
+
+    The same real paper arrives with different ids per source (S2 id,
+    OpenAlex W-id, DOI-based id) and DOI coverage differs per record, so
+    cross-stage deduplication must match on ANY of id / DOI / title.
+    """
+    keys = {f"id:{paper.paper_id}"}
+    if paper.doi:
+        keys.add(f"doi:{paper.doi.lower()}")
+    title_key = normalize_title(paper.title)
+    if title_key:
+        keys.add(f"title:{title_key}")
+    return keys
+
+
 def dedupe(papers: list[Paper]) -> list[Paper]:
     """Merge duplicates by DOI, else canonical id, else normalized title."""
     by_doi: dict[str, Paper] = {}

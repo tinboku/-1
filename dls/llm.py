@@ -143,11 +143,11 @@ class HeuristicLLM:
         lines.append("")
         lines.append("## References")
         lines.append("")
-        lines.append("| KEY | Year | Cit/yr | Title |")
-        lines.append("|---|---|---|---|")
+        lines.append("| KEY | Year | Cit/yr | Found via | Title |")
+        lines.append("|---|---|---|---|---|")
         for p in papers:
             cpy = p.citations_per_year()
-            lines.append(f"| {p.key} | {p.year or ''} | {cpy:.1f} | {p.title} |")
+            lines.append(f"| {p.key} | {p.year or ''} | {cpy:.1f} | {p.found_via or 'search'} | {p.title} |")
         lines.append("")
         return "\n".join(lines)
 

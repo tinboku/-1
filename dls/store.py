@@ -83,6 +83,10 @@ class Store:
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False, timeout=30)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        # Migration: provenance column on search_results (added after v0.1).
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(search_results)")}
+        if "provenance" not in cols:
+            self.conn.execute("ALTER TABLE search_results ADD COLUMN provenance TEXT")
         self.conn.commit()
 
     # -- projects ---------------------------------------------------------
@@ -113,6 +117,8 @@ class Store:
             pid = int(row["id"])
             # Enrich missing fields only.
             cur = self.conn.execute("SELECT * FROM papers WHERE id = ?", (pid,)).fetchone()
+            if not paper.key and cur["key"]:
+                paper.key = cur["key"]
             updates: dict[str, object] = {}
             if not cur["abstract"] and paper.abstract:
                 updates["abstract"] = paper.abstract
@@ -226,9 +232,9 @@ class Store:
             if is_included:
                 rank += 1
             self.conn.execute(
-                """INSERT OR REPLACE INTO search_results (search_id, paper_id, match, reason, included, rank)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (search_id, db_id, paper.match, paper.match_reason, 1 if is_included else 0, rank if is_included else None),
+                """INSERT OR REPLACE INTO search_results (search_id, paper_id, match, reason, included, rank, provenance)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (search_id, db_id, paper.match, paper.match_reason, 1 if is_included else 0, rank if is_included else None, paper.found_via),
             )
         self.conn.execute(
             "UPDATE searches SET counts = ?, coverage = ? WHERE id = ?",
@@ -257,7 +263,7 @@ class Store:
 
     def search_papers(self, search_id: int, included_only: bool = True) -> list[Paper]:
         sql = """
-            SELECT p.*, sr.match AS sr_match, sr.reason AS sr_reason, sr.rank AS sr_rank
+            SELECT p.*, sr.match AS sr_match, sr.reason AS sr_reason, sr.rank AS sr_rank, sr.provenance AS sr_provenance
             FROM search_results sr JOIN papers p ON p.id = sr.paper_id
             WHERE sr.search_id = ?
         """
@@ -269,6 +275,7 @@ class Store:
             p = self._row_to_paper(row)
             p.match = row["sr_match"]
             p.match_reason = row["sr_reason"]
+            p.found_via = row["sr_provenance"]
             papers.append(p)
         return papers
 

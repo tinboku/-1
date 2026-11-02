@@ -73,6 +73,11 @@ class TestEngine(unittest.TestCase):
         titles = [p.title for p in outcome.included]
         self.assertTrue(any("AutoDDG" in t for t in titles))
         self.assertTrue(any("Metadata Generation for Catalogs" in t for t in titles))
+        # Provenance: the snowballed paper records which seed it came from.
+        snowballed = [p for p in outcome.included if "Catalogs" in p.title][0]
+        self.assertEqual(snowballed.found_via, "citations of [Zhang25]")
+        stored_snow = [p for p in self.store.search_papers(outcome.search_id) if "Catalogs" in p.title][0]
+        self.assertEqual(stored_snow.found_via, "citations of [Zhang25]")
         for p in outcome.included:
             self.assertIsNotNone(p.key)
             self.assertGreaterEqual(p.match, 55)
@@ -85,6 +90,43 @@ class TestEngine(unittest.TestCase):
         self.assertEqual(len(stored), 5)
         search = self.store.get_search(outcome.search_id)
         self.assertEqual(search["counts"]["found"], 5)
+
+
+class FakeS2Clone:
+    """Returns the seed paper again under a different id (cross-source clone)."""
+
+    def search(self, query, limit=50, offset=0, year=None):
+        return [P1]
+
+    def citations(self, paper_id, limit=50):
+        clone = mk("doi:10.1/a", P1.title, year=2025, cites=30, doi="10.1/a", source="crossref")
+        return [clone]
+
+    def references(self, paper_id, limit=50):
+        return []
+
+
+class TestCrossSourceDedup(unittest.TestCase):
+    def test_clone_not_double_counted(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = Store(Path(td) / "t.db")
+            engine = DeepSearchEngine(FakeS2Clone(), None, HeuristicLLM(), store)
+            outcome = engine.run("dataset descriptions with LLMs", CRITERIA, per_query=10)
+            self.assertEqual(outcome.found, 1)
+            self.assertEqual(outcome.included[0].title, P1.title)
+
+
+class TestTrace(unittest.TestCase):
+    def test_trace_from_seed(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = Store(Path(td) / "t.db")
+            engine = DeepSearchEngine(FakeS2(), None, HeuristicLLM(), store)
+            seed = mk("s2-1", "AutoDDG: Automated Dataset Description Generation", doi="10.1/a")
+            outcome = engine.trace(seed, question=CRITERIA[0])
+            # FakeS2.citations(s2-1) -> [P4]; references -> [].
+            self.assertEqual(outcome.found, 1)
+            self.assertEqual(outcome.included[0].title, P4.title)
+            self.assertEqual(outcome.included[0].found_via, "citations of [Zhang25]")
 
 
 if __name__ == "__main__":

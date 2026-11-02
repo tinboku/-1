@@ -99,10 +99,45 @@ def cmd_search(ctx: Context, args: argparse.Namespace) -> int:
         )
     print(f"Search id: {outcome.search_id}\n")
     for p in outcome.included[: args.show]:
-        print(f"  [{p.key}] {p.match:5.1f}  {p.title} ({p.year or 'n.d.'}) — {p.citations_per_year():.1f} cit/yr")
+        via = f"  ← {p.found_via}" if p.found_via and p.found_via != "search" else ""
+        print(f"  [{p.key}] {p.match:5.1f}  {p.title} ({p.year or 'n.d.'}) — {p.citations_per_year():.1f} cit/yr{via}")
     if outcome.found > args.show:
         print(f"  … and {outcome.found - args.show} more (see: dls papers / web UI)")
     print(f"\nNext: dls report {outcome.search_id}   |   dls extract {outcome.search_id} --columns paper,year,method")
+    return 0
+
+
+def cmd_trace(ctx: Context, args: argparse.Namespace) -> int:
+    seed = None
+    stored = ctx.store.find_paper(args.identifier)
+    if stored is not None:
+        if stored.paper_id.startswith("doi:"):
+            seed = ctx.s2.paper(f"DOI:{stored.doi}") if stored.doi else None
+        else:
+            seed = stored
+    if seed is None and args.identifier.startswith("10."):
+        try:
+            seed = ctx.s2.paper(f"DOI:{args.identifier}")
+        except Exception:
+            seed = None
+    if seed is None:
+        try:
+            results = ctx.s2.search(args.identifier, limit=1)
+            seed = results[0] if results else None
+        except Exception:
+            seed = None
+    if seed is None:
+        print("Could not resolve that seed paper.")
+        return 1
+    outcome = ctx.engine.trace(
+        seed, question=args.question, hops=args.hops, progress=_progress
+    )
+    for w in outcome.warnings:
+        print(f"  warning: {w}", file=sys.stderr)
+    print(f"\n{outcome.found} connected papers · {outcome.excluded_count} excluded (search id: {outcome.search_id})\n")
+    for p in outcome.included[: args.show]:
+        print(f"  [{p.key}] {p.match:5.1f}  {p.title} ({p.year or 'n.d.'})  ← {p.found_via}")
+    print(f"\nNext: dls report {outcome.search_id}")
     return 0
 
 
@@ -248,6 +283,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rounds", type=int, default=2)
     p.add_argument("--show", type=int, default=15)
     p.set_defaults(func=cmd_search)
+
+    p = sub.add_parser("trace", help="expand from one seed paper along its citation graph")
+    p.add_argument("identifier", help="KEY, DOI, S2 id, or a title fragment to resolve")
+    p.add_argument("--question", default=None, help="score neighbours against this instead of the seed")
+    p.add_argument("--hops", type=int, default=1)
+    p.add_argument("--show", type=int, default=20)
+    p.set_defaults(func=cmd_trace)
 
     p = sub.add_parser("report", help="generate a cited report for a search")
     p.add_argument("search_id", type=int)
