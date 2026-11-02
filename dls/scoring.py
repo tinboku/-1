@@ -17,8 +17,15 @@ _STOPWORDS = {
 }
 
 
+_CJK = "\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\U00020000-\U0002fa1f\U00030000-\U000323af"
+
+
 def tokenize(text: str) -> list[str]:
-    return [t for t in re.findall(r"[a-z0-9]+", text.lower()) if len(t) > 2]
+    tokens = [t for t in re.findall(r"[a-z0-9]+", text.lower()) if len(t) > 2]
+    for run in re.findall(f"[{_CJK}]+", text):
+        tokens.extend(run)
+        tokens.extend(run[i:i + 2] for i in range(len(run) - 1))
+    return tokens
 
 
 def content_tokens(text: str) -> set[str]:
@@ -26,7 +33,7 @@ def content_tokens(text: str) -> set[str]:
 
 
 def normalize_title(title: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
+    return re.sub(f"[^a-z0-9{_CJK}]+", " ", title.lower()).strip()
 
 
 def make_key(paper: Paper, taken: set[str]) -> str:
@@ -102,12 +109,13 @@ def dedupe(papers: list[Paper]) -> list[Paper]:
     out: list[Paper] = []
     for p in papers:
         found: Paper | None = None
+        title_key = normalize_title(p.title)
         if p.doi and p.doi.lower() in by_doi:
             found = by_doi[p.doi.lower()]
         elif p.paper_id in by_id:
             found = by_id[p.paper_id]
-        elif normalize_title(p.title) in by_title:
-            found = by_title[normalize_title(p.title)]
+        elif title_key and title_key in by_title:
+            found = by_title[title_key]
         if found is None:
             out.append(p)
             found = p
@@ -116,7 +124,8 @@ def dedupe(papers: list[Paper]) -> list[Paper]:
         if found.doi:
             by_doi[found.doi.lower()] = found
         by_id[found.paper_id] = found
-        by_title[normalize_title(found.title)] = found
+        if title_key:
+            by_title[title_key] = found
     return out
 
 

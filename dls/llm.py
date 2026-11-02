@@ -70,17 +70,23 @@ class HeuristicLLM:
         return [heuristic_match(criteria, p) for p in papers]
 
     # -- reflection (adapting stage) -----------------------------------------
-    def reflect(self, criteria: list[str], top_papers: list[Paper], round_no: int) -> dict:
+    def reflect(self, criteria: list[str], top_papers: list[Paper], round_no: int,
+                context: dict | None = None) -> dict:
         seen = content_tokens(" ".join(criteria))
         fresh: list[str] = []
         for p in top_papers:
-            for t in content_tokens(p.title):
+            for t in sorted(content_tokens(p.title)):
                 if t not in seen and len(t) > 4 and t not in fresh:
                     fresh.append(t)
         new_queries = []
         if fresh:
             new_queries.append(" ".join(fresh[:6]))
-        return {"new_queries": new_queries, "stop": round_no >= 2}
+        return {
+            "new_queries": new_queries,
+            "stop": round_no >= 2,
+            "reason": "Offline heuristic reached its two-round limit." if round_no >= 2
+                      else "Explore fresh title terms and citation neighbours.",
+        }
 
     # -- report ---------------------------------------------------------------
     _FAMILY_KEYWORDS = [
@@ -311,27 +317,38 @@ class OpenAIChatLLM(HeuristicLLM):
                 results.extend(heuristic_match(criteria, p) for p in batch)
         return results
 
-    def reflect(self, criteria: list[str], top_papers: list[Paper], round_no: int) -> dict:
+    def reflect(self, criteria: list[str], top_papers: list[Paper], round_no: int,
+                context: dict | None = None) -> dict:
         try:
             titles = "\n".join(f"- {p.title}" for p in top_papers[:10])
             out = self._chat(
                     "You are reflecting on a literature search in progress. Given the "
                     "criteria and the best papers so far, propose up to 2 new search "
                     "queries that would find relevant papers the criteria miss, and say "
-                    "whether the search looks saturated. Return JSON: "
-                    '{"new_queries": ["..."], "stop": false}',
-                "Criteria:\n- " + "\n- ".join(criteria) + f"\n\nBest papers so far:\n{titles}",
+                    "whether the search looks saturated. Use the executed query history, "
+                    "result counts, excluded-paper reasons and per-criterion coverage to "
+                    "target gaps. Do not repeat executed queries. Failed queries are not "
+                    "evidence of saturation. Coverage is a lexical proxy, not proof of recall. "
+                    "Return JSON with a nonempty reason (required when stopping): "
+                    '{"new_queries": ["..."], "stop": false, "reason": "..."}',
+                "Criteria:\n- " + "\n- ".join(criteria) + f"\n\nBest papers so far:\n{titles}"
+                + f"\nRound: {round_no}\nSearch context:\n"
+                + json.dumps(context or {}, ensure_ascii=False),
                 json_mode=True,
             )
             data = self._parse_json(out)
-            if isinstance(data, dict):
+            if (isinstance(data, dict) and isinstance(data.get("new_queries"), list)
+                    and isinstance(data.get("stop"), bool)
+                    and isinstance(data.get("reason"), str) and data["reason"].strip()):
                 return {
-                    "new_queries": [str(q) for q in data.get("new_queries") or []][:2],
-                    "stop": bool(data.get("stop")),
+                    "new_queries": [q.strip() for q in data["new_queries"]
+                                    if isinstance(q, str) and q.strip()][:2],
+                    "stop": data["stop"],
+                    "reason": data["reason"].strip(),
                 }
         except Exception:
             pass
-        return super().reflect(criteria, top_papers, round_no)
+        return super().reflect(criteria, top_papers, round_no, context=context)
 
     def write_report(self, question: str, criteria: list[str], papers: list[Paper], focus: str | None = None) -> str:
         try:

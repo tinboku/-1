@@ -90,6 +90,12 @@ function logJobEvent(jobLabel) {
 }
 
 // Run a job: stream progress into the log, return the final event.
+function searchWarnings(result) {
+  if (!result?.degraded && !result?.warnings?.length) return "";
+  return `<div role="alert" class="status-error"><strong>${result.degraded ? "⚠ 部分数据源失败，结果可能不完整，未收敛" : "⚠ 检索警告"}</strong>` +
+    `<ul>${(result.warnings || []).map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>`;
+}
+
 async function runJob(jobId, label) {
   switchTab("progress");
   if ($("job-log").querySelector(".muted")) $("job-log").innerHTML = "";
@@ -97,9 +103,10 @@ async function runJob(jobId, label) {
   let headEl = null;
   const final = await watchJob(jobId, (ev) => { headEl = render(ev) || headEl; });
   const status = document.createElement("span");
-  status.className = final.type === "done" ? "status-done" : "status-error";
-  status.textContent = final.type === "done" ? "✓ 完成" : `✗ ${final.error || "失败"}`;
+  status.className = final.type === "done" && !final.result?.degraded ? "status-done" : "status-error";
+  status.textContent = final.type === "done" ? (final.result?.degraded ? "⚠ 完成，结果不完整" : "✓ 完成") : `✗ ${final.error || "失败"}`;
   (headEl || $("job-log")).appendChild(status);
+  $("job-log").insertAdjacentHTML("beforeend", searchWarnings(final.result));
   return final;
 }
 
@@ -201,6 +208,7 @@ async function openSearch(id) {
     `<span>入选 ${c.found ?? s.papers.length} 篇</span><span>全文 ${c.with_full_text ?? 0}</span>` +
     `<span>排除 ${c.excluded ?? 0}</span><span>候选 ${c.candidates ?? "?"}</span><span>${cov}</span>`;
   $("detail-criteria").innerHTML = (s.criteria || []).map((x) => `<span class="chip">${esc(x)}</span>`).join("");
+  $("detail-criteria").insertAdjacentHTML("beforeend", searchWarnings(s));
   const body = $("papers-body");
   body.innerHTML = "";
   for (const p of s.papers) body.appendChild(paperRow(p, "search"));

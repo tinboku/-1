@@ -67,6 +67,9 @@ class SearchOutcome:
     converged: bool
     coverage: dict | None  # discovery-curve estimate, see engine.estimate_coverage
     warnings: list[str] = field(default_factory=list)
+    degraded: bool = False
+    stop_reason: str | None = None
+    query_history: list[dict] = field(default_factory=list)
 
     @property
     def found(self) -> int:
