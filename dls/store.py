@@ -87,6 +87,14 @@ class Store:
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(search_results)")}
         if "provenance" not in cols:
             self.conn.execute("ALTER TABLE search_results ADD COLUMN provenance TEXT")
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(searches)")}
+        for name, definition in (
+            ("degraded", "INTEGER NOT NULL DEFAULT 0"),
+            ("warnings", "TEXT NOT NULL DEFAULT '[]'"),
+            ("converged", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if name not in cols:
+                self.conn.execute(f"ALTER TABLE searches ADD COLUMN {name} {definition}")
         self.conn.commit()
 
     # -- projects ---------------------------------------------------------
@@ -221,7 +229,8 @@ class Store:
         self.conn.commit()
         return int(cur.lastrowid)
 
-    def save_results(self, search_id: int, scored: list[Paper], included_ids: set[int], counts: dict, coverage: dict | None) -> None:
+    def save_results(self, search_id: int, scored: list[Paper], included_ids: set[int], counts: dict, coverage: dict | None,
+                     *, degraded: bool = False, warnings: list[str] | None = None, converged: bool = False) -> None:
         rank = 0
         for paper in scored:
             db_id = getattr(paper, "db_id", None)
@@ -237,8 +246,9 @@ class Store:
                 (search_id, db_id, paper.match, paper.match_reason, 1 if is_included else 0, rank if is_included else None, paper.found_via),
             )
         self.conn.execute(
-            "UPDATE searches SET counts = ?, coverage = ? WHERE id = ?",
-            (json.dumps(counts), json.dumps(coverage) if coverage else None, search_id),
+            "UPDATE searches SET counts = ?, coverage = ?, degraded = ?, warnings = ?, converged = ? WHERE id = ?",
+            (json.dumps(counts), json.dumps(coverage) if coverage else None,
+             int(degraded), json.dumps(warnings or []), int(converged), search_id),
         )
         self.conn.commit()
 
@@ -254,6 +264,9 @@ class Store:
             "answers": json.loads(row["answers"] or "{}"),
             "counts": json.loads(row["counts"] or "{}"),
             "coverage": json.loads(row["coverage"]) if row["coverage"] else None,
+            "degraded": bool(row["degraded"]),
+            "warnings": json.loads(row["warnings"] or "[]"),
+            "converged": bool(row["converged"]),
             "created_at": row["created_at"],
         }
 

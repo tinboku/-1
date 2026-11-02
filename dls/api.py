@@ -308,6 +308,7 @@ def create_app(ctx=None) -> FastAPI:
                 "with_full_text": outcome.with_full_text,
                 "rounds": outcome.rounds,
                 "converged": outcome.converged,
+                "degraded": outcome.degraded,
                 "coverage": outcome.coverage,
                 "warnings": outcome.warnings,
             }
@@ -330,6 +331,8 @@ def create_app(ctx=None) -> FastAPI:
                 "search_id": outcome.search_id,
                 "found": outcome.found,
                 "excluded": outcome.excluded_count,
+                "converged": outcome.converged,
+                "degraded": outcome.degraded,
                 "warnings": outcome.warnings,
             }
 

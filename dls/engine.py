@@ -56,14 +56,15 @@ class DeepSearchEngine:
             paper.match_reason = reason
         return papers
 
-    def _snowball(self, seeds: list[Paper], limit_per_seed: int = 30) -> list[Paper]:
+    def _snowball(self, seeds: list[Paper], warnings: list[str], limit_per_seed: int = 30) -> list[Paper]:
         out: list[Paper] = []
         for seed in seeds:
             label = f"[{seed.key}]" if seed.key else f"'{seed.title[:40]}'"
             for fetcher, direction in ((self.s2.citations, "citations"), (self.s2.references, "references")):
                 try:
                     found = fetcher(seed.paper_id, limit=limit_per_seed)
-                except Exception:
+                except Exception as exc:
+                    warnings.append(f"{direction} lookup failed for {label}: {exc}")
                     continue
                 for p in found:
                     if p.found_via is None:
@@ -125,15 +126,18 @@ class DeepSearchEngine:
         seen_keys: set[str] = set(identity_keys(seed))
         pool: list[Paper] = []
         frontier = [seed]
+        converged = False
+        rounds_done = 0
         for hop in range(1, hops + 1):
+            rounds_done = hop
             nxt: list[Paper] = []
             for node in frontier:
                 node_label = f"[{node.key}]" if node.key else f"'{node.title[:40]}'"
                 for fetcher, direction in ((self.s2.citations, "citations"), (self.s2.references, "references")):
                     try:
                         found = fetcher(node.paper_id, limit=per_direction)
-                    except Exception:
-                        warnings.append(f"{direction} lookup failed for {node_label}.")
+                    except Exception as exc:
+                        warnings.append(f"{direction} lookup failed for {node_label}: {exc}")
                         continue
                     for p in found:
                         if identity_keys(p) & seen_keys:
@@ -144,6 +148,7 @@ class DeepSearchEngine:
                         pool.append(p)
                         nxt.append(p)
             if not nxt:
+                converged = not warnings
                 break
             # Score this hop before deciding the next frontier.
             hop_scored = self._score(criteria, nxt)
@@ -155,6 +160,7 @@ class DeepSearchEngine:
             )[:5]
             progress("Adapting and searching again", f"hop {hop}: {len(nxt)} neighbours")
             if not frontier:
+                converged = not warnings
                 break
 
         included = [p for p in pool if (p.match or 0) >= self.include_threshold]
@@ -166,7 +172,8 @@ class DeepSearchEngine:
             "excluded": len(pool) - len(included),
             "candidates": len(pool),
         }
-        self.store.save_results(search_id, pool, included_db_ids, counts, None)
+        self.store.save_results(search_id, pool, included_db_ids, counts, None,
+                                degraded=bool(warnings), warnings=warnings, converged=converged)
         progress("Done", f"{counts['found']} connected papers · {counts['excluded']} excluded")
         return SearchOutcome(
             search_id=search_id,
@@ -175,10 +182,11 @@ class DeepSearchEngine:
             included=included,
             excluded_count=counts["excluded"],
             with_full_text=counts["with_full_text"],
-            rounds=hops,
-            converged=True,
+            rounds=rounds_done,
+            converged=converged,
             coverage=None,
             warnings=warnings,
+            degraded=bool(warnings),
         )
 
     # ------------------------------------------------------------------
@@ -205,21 +213,21 @@ class DeepSearchEngine:
             try:
                 pool.extend(self.s2.search(q, limit=per_query))
             except RateLimited:
-                warnings.append("Semantic Scholar rate-limited part of the initial search.")
+                warnings.append(f"Semantic Scholar initial search rate-limited for query {q!r}.")
                 continue
             except Exception as exc:  # network etc.
-                warnings.append(f"Semantic Scholar search failed: {exc}")
+                warnings.append(f"Semantic Scholar initial search failed for query {q!r}: {exc}")
                 continue
         try:
             if self.openalex is not None:
                 pool.extend(self.openalex.search(question, per_page=25))
-        except Exception:
-            warnings.append("OpenAlex channel unavailable; running single-source.")
+        except Exception as exc:
+            warnings.append(f"OpenAlex initial search failed for query {question!r}: {exc}")
         if self.crossref is not None:
             try:
                 pool.extend(self.crossref.search(question, rows=per_query))
-            except Exception:
-                warnings.append("Crossref channel unavailable.")
+            except Exception as exc:
+                warnings.append(f"Crossref initial search failed for query {question!r}: {exc}")
 
         pool = dedupe(pool)
         for p in pool:
@@ -247,7 +255,7 @@ class DeepSearchEngine:
             reflection = self.llm.reflect(criteria, sorted(included, key=lambda p: -(p.match or 0)), round_no)
             seeds = sorted(included, key=lambda p: -(p.match or 0))[:seed_top]
             progress("Adapting and searching again", f"snowballing from {len(seeds)} seeds")
-            candidates = dedupe(self._snowball(seeds))
+            candidates = dedupe(self._snowball(seeds, warnings))
             # The reflection step may propose fresh queries; run them too.
             for new_q in reflection.get("new_queries") or []:
                 try:
@@ -256,13 +264,14 @@ class DeepSearchEngine:
                         if p.found_via is None:
                             p.found_via = "reflection query"
                     candidates = dedupe(candidates + extra)
-                except Exception:
-                    continue
+                except Exception as exc:
+                    seed_labels = ", ".join(f"[{p.key}]" if p.key else repr(p.title[:40]) for p in seeds) or "no seeds"
+                    warnings.append(f"reflection query search failed for {new_q!r} (seeds: {seed_labels}): {exc}")
             candidates = [c for c in candidates if not (identity_keys(c) & seen_keys)]
             for c in candidates:
                 seen_keys |= identity_keys(c)
             if not candidates:
-                converged = True
+                converged = not warnings
                 break
             new_scored = self._score(criteria, candidates)
             for p in new_scored:
@@ -272,7 +281,7 @@ class DeepSearchEngine:
             included.extend(new_included)
             gain = len(new_included) / max(1, len(included))
             if reflection.get("stop") or gain < 0.03:
-                converged = True
+                converged = not warnings
                 break
 
         included.sort(key=lambda p: -(p.match or 0))
@@ -299,7 +308,8 @@ class DeepSearchEngine:
             "excluded": len(scored) - len(included),
             "candidates": len(scored),
         }
-        self.store.save_results(search_id, scored, included_db_ids, counts, coverage)
+        self.store.save_results(search_id, scored, included_db_ids, counts, coverage,
+                                degraded=bool(warnings), warnings=warnings, converged=converged)
         # save_results upserts again internally for any paper missing db_id; keep ids consistent.
         progress("Done", f"{counts['found']} papers · {counts['with_full_text']} with full text · {counts['excluded']} excluded")
 
@@ -314,4 +324,5 @@ class DeepSearchEngine:
             converged=converged,
             coverage=coverage,
             warnings=warnings,
+            degraded=bool(warnings),
         )
